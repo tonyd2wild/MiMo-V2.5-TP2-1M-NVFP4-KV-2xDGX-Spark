@@ -136,11 +136,22 @@ The patched **mods** (`nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, etc.) are NOT vendo
 
 This repo documents the launch config + reproducibility notes, but the successful 1M run did **not** use stock vLLM.
 
-**Container:** a custom patched vLLM image — local tag `vllm-mimo-omni-mtp2-1m-audio-exp:20260620` (the name is historical from earlier MTP2 experiments; the final working 1M recipe uses **MTP1**: `--speculative-config '{"method":"mtp","num_speculative_tokens":1}'`).
+**What the stack actually IS (positive ID):** vLLM **`0.21.1rc1.dev85+gd87ee1893`** (commit `d87ee1893`, ~2026-05-18, CUDA 12.2 / `cu132`) — a **dev build, NOT a released pip wheel** — **+ the 6 local-patch mods below + Ray** for the 2-node split. That's the whole runtime. Because it's a dev build plus patches, **stock `pip install vllm` will NOT have** the NVFP4-KV / DiffKV / MiMoV2Omni code paths and will reject `--kv-cache-dtype nvfp4`, `--attention-backend triton_attn_diffkv`, and the `MiMoV2OmniForCausalLM` arch override.
 
-**Lineage:** NOT launched directly through `eugr/spark-vllm-docker`, and NOT a direct run of `HeNryous/mimo-spark-optimized`. Those informed the Spark/RoCE + TP=2 debugging, but the working 1M path is a custom patched vLLM runtime.
+**Container:** custom patched image, local tag `vllm-mimo-omni-mtp2-1m-audio-exp:20260620` (name is historical from earlier MTP2 experiments; final recipe is **MTP1**: `--speculative-config '{"method":"mtp","num_speculative_tokens":1}'`). Not on a public registry.
 
-**Required mods** (applied into the container before launching vLLM): `nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, `fix-modelopt-mixed-mxfp8`, `ray-keep-node-nccl-hca`, `fix-prometheus-instrumentator-router`, `drop-caches`. A container missing these is **not** the same runtime and may reject NVFP4 KV, OOM, or freeze during MTP drafter/profiling.
+**Lineage:** NOT launched through `eugr/spark-vllm-docker`, and NOT a direct run of `HeNryous/mimo-spark-optimized`. Those informed the Spark/RoCE + TP=2 debugging only.
+
+**Ray is REQUIRED** for this 2-node TP=2. vLLM's `mp`/multiprocessing executor is **single-host only** — cross-node tensor-parallel must use `--distributed-executor-backend ray`. Running it without Ray was not attempted and is not expected to work for a 2-box split (a single-node multiproc backend can't span two physical Sparks).
+
+**Required mods** — these are **local patch scripts (each a `run.sh` applied into the container), NOT published packages**. They patch the dev-build vLLM/deps at container start:
+- `nvfp4-kv-diffkv` — enables `--kv-cache-dtype nvfp4` + `--attention-backend triton_attn_diffkv` (the core unlock)
+- `fix-mimo-v2-vllm` — adds the `MiMoV2OmniForCausalLM` architecture
+- `fix-modelopt-mixed-mxfp8` — ModelOpt mixed-precision fix
+- `ray-keep-node-nccl-hca` — adds `NCCL_IB_HCA` to Ray's non-carry-over env so each node keeps its own RoCE HCA (Ray won't copy the head's to workers)
+- `fix-prometheus-instrumentator-router` — `prometheus_fastapi_instrumentator` router compat patch (else vLLM startup throws)
+- `drop-caches` — page-cache drop before load
+A container missing these is **not** the same runtime and may reject NVFP4 KV, OOM, or freeze during MTP drafter/profiling. (They're applied via an `apply-mods.sh` that `docker cp`s each mod dir in and runs its `run.sh`.)
 
 **Launch method** (manual worker/head): clean-stop old containers+Ray → start worker container → start head container → apply mods on both → start Ray with object-store capped to 1GiB on every node → force Ray/vLLM host IPs to the RoCE/static IPs → confirm Ray sees 2 GPUs → launch vLLM on head. Use `recipe/run-worker.sh`, `recipe/run-head.sh`, `recipe/launch.sh` (don't treat `launch.sh` alone as the full recipe — it assumes the patched container + Ray cluster + mods are already correct).
 
@@ -157,13 +168,13 @@ This repo documents the launch config + reproducibility notes, but the successfu
 Explicit so inspiration + upstream work are credited cleanly.
 
 **Model & serving stack**
-- [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso) — the MiMo V2.5 NVFP4 checkpoint.
+- [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2.5-NVFP4) — the MiMo V2.5 NVFP4 checkpoint (the run pinned snapshot `a147dd04d6cf861e43b2d783dcde23b53ab7ee68`).
 - [vLLM](https://github.com/vllm-project/vllm) — OpenAI-compatible serving, TP, speculative decoding, multimodal, Ray executor.
 - [Ray](https://github.com/ray-project/ray) — multi-node placement + cluster execution.
 - NVIDIA **NCCL** (RoCE transport for TP), **DGX Spark / GB10** + ConnectX networking, **FlashInfer / ModelOpt** kernels + NVFP4 quant paths.
 
 **Community references & debugging signals**
-- [`eugr/spark-vllm-docker`](https://github.com/eugr/spark-vllm-docker) (esp. PR #251 / `a3refaat`) — DGX Spark ConnectX/RoCE quirks + direct-cable networking + base mods.
+- [`eugr/spark-vllm-docker`](https://github.com/eugr/spark-vllm-docker) (esp. [PR #251](https://github.com/eugr/spark-vllm-docker/pull/251) / `a3refaat`) — DGX Spark ConnectX/RoCE quirks + direct-cable networking + base mods. (Informed our debugging — but this recipe is NOT an eugr launch; see "Runtime stack used".)
 - [`HeNryous/mimo-spark-optimized`](https://github.com/HeNryous/mimo-spark-optimized) — a comparison point for TP=2 Spark work (no code copied from it).
 - NVIDIA Developer Forums DGX Spark / GB10 community posts; Mashie's link-behavior / cold power-drain clues; Renek & MiaAI_Lab notes on MiMo-on-Spark memory pressure + loader difficulty.
 - Eval methodology adapted from `tool-eval-bench v2.0.1` by `wolttam`.
