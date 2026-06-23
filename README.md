@@ -89,6 +89,28 @@ MAX_MODEL_LEN=500000   MAX_NUM_SEQS=2   GPU_MEMORY_UTILIZATION=0.82
 MAX_MODEL_LEN=1000000  MAX_NUM_SEQS=4   GPU_MEMORY_UTILIZATION=0.84
 ```
 
+### Check Ray didn't bind a link-local interface (most common real crash)
+If startup logs show a worker like `RayWorkerWrapper ... ip=169.254.x.x`, Ray bound to a **link-local** interface instead of your RoCE/cluster IP — this crashes/OOMs. Fix: export the host IP before starting Ray (the included `run-head.sh`/`run-worker.sh` already do this):
+```bash
+export VLLM_HOST_IP=<this-node-roce-ip>
+ray start --node-ip-address=<this-node-roce-ip> ...
+```
+
+### If it dies/vanishes during profiling — check OOM-kill + swap
+```bash
+docker inspect <container> --format '{{.State.OOMKilled}}'
+dmesg -T | grep -Ei 'killed|oom|out of memory' | tail -n 80
+free -h     # if swap is ~100% used and free RAM is tiny, the node is thrashing
+```
+Clean-start both nodes, kill stale Ray/vLLM, and confirm the Ray object store is capped at `1073741824` on EVERY node.
+
+### Debug-only: isolate video-encoder profiling
+If the process dies right after `Encoder cache will be initialized ... profiled with 1 video items ...`, the video max-feature profile may be pushing a low-headroom node over. Boot once with video disabled to isolate:
+```bash
+--limit-mm-per-prompt '{"image":4,"video":0,"audio":1}'
+```
+If that boots, text/image/audio is fine and it's specifically video profiling memory. (Debug step — not the full Omni recipe.)
+
 ## Repro checklist
 
 1. Worker-first Ray; `safetensors`; Omni arch; `--kv-cache-dtype nvfp4` + `triton_attn_diffkv`; MTP1.

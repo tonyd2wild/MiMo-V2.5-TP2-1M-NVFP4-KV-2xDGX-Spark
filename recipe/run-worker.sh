@@ -8,6 +8,9 @@ set -euo pipefail
 : "${HEAD_ROCE_IP:?set HEAD_ROCE_IP (the head node's RoCE/cluster IP)}"
 : "${WORKER_ROCE_IP:?set WORKER_ROCE_IP (this node's RoCE/cluster IP)}"
 
+# Pin the host IP so Ray/vLLM don't bind a link-local 169.254.x.x interface (a known OOM/crash cause).
+export VLLM_HOST_IP="${WORKER_ROCE_IP}"
+
 ray stop --force || true
 ray start \
   --address="${HEAD_ROCE_IP}:${RAY_PORT}" \
