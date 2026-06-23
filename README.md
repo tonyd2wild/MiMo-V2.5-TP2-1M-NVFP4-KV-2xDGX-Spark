@@ -132,6 +132,20 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 
 The patched **mods** (`nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, etc.) are NOT vendored — they carry upstream licenses. See **Credits** and pull from upstream.
 
+## Runtime stack used
+
+This repo documents the launch config + reproducibility notes, but the successful 1M run did **not** use stock vLLM.
+
+**Container:** a custom patched vLLM image — local tag `vllm-mimo-omni-mtp2-1m-audio-exp:20260620` (the name is historical from earlier MTP2 experiments; the final working 1M recipe uses **MTP1**: `--speculative-config '{"method":"mtp","num_speculative_tokens":1}'`).
+
+**Lineage:** NOT launched directly through `eugr/spark-vllm-docker`, and NOT a direct run of `HeNryous/mimo-spark-optimized`. Those informed the Spark/RoCE + TP=2 debugging, but the working 1M path is a custom patched vLLM runtime.
+
+**Required mods** (applied into the container before launching vLLM): `nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, `fix-modelopt-mixed-mxfp8`, `ray-keep-node-nccl-hca`, `fix-prometheus-instrumentator-router`, `drop-caches`. A container missing these is **not** the same runtime and may reject NVFP4 KV, OOM, or freeze during MTP drafter/profiling.
+
+**Launch method** (manual worker/head): clean-stop old containers+Ray → start worker container → start head container → apply mods on both → start Ray with object-store capped to 1GiB on every node → force Ray/vLLM host IPs to the RoCE/static IPs → confirm Ray sees 2 GPUs → launch vLLM on head. Use `recipe/run-worker.sh`, `recipe/run-head.sh`, `recipe/launch.sh` (don't treat `launch.sh` alone as the full recipe — it assumes the patched container + Ray cluster + mods are already correct).
+
+**RoCE interface:** Ray and vLLM must bind to the intended RoCE/static cluster IPs — **not** `169.254.x.x` and not a management fallback (see [Avoiding OOM](#avoiding-oom--full-reproduction)).
+
 ## Claims we can / can't make
 
 **Safe:** boots on 2× DGX Spark at TP=2 / MTP1 / NVFP4 KV; serves `max_model_len=1000000` (verified + benched at 97.8 quality); ~1.97M-token KV pool; MTP1 > MTP2; safetensors is the stable loader; thinking-OFF beats thinking-ON for tool/agent tasks.
