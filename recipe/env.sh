@@ -4,10 +4,10 @@
 
 # --- core serving shape ---
 export LOAD_FORMAT=safetensors          # NOT instanttensor (it wedges the MTP+NVFP4-KV 2nd load)
-export MAX_MODEL_LEN=500000
+export MAX_MODEL_LEN=1000000
 export MAX_NUM_BATCHED_TOKENS=4096
-export MAX_NUM_SEQS=2
-export GPU_MEMORY_UTILIZATION=0.82      # 0.80 just-barely OOMs at 500K (caps ~474K)
+export MAX_NUM_SEQS=4
+export GPU_MEMORY_UTILIZATION=0.84      # 0.80 just-barely OOMs at 500K (caps ~474K)
 export ENABLE_MTP=1
 export MTP_SPEC_TOKENS=1                # MTP1 > MTP2 here (MTP2 halves KV pool, no speed gain)
 export ENFORCE_EAGER=1

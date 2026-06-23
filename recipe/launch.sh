@@ -18,10 +18,10 @@ vllm serve "${MODEL_PATH}" \
   --mm-encoder-tp-mode data \
   --attention-backend triton_attn_diffkv \
   --kv-cache-dtype nvfp4 \
-  --gpu-memory-utilization 0.82 \
-  --max-model-len 500000 \
+  --gpu-memory-utilization 0.84 \
+  --max-model-len 1000000 \
   --max-num-batched-tokens 4096 \
-  --max-num-seqs 2 \
+  --max-num-seqs 4 \
   --block-size 32 \
   --enable-prefix-caching \
   --enable-chunked-prefill \
