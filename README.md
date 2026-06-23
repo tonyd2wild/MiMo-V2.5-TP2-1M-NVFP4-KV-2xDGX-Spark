@@ -4,7 +4,7 @@ Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2
 
 This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark](https://github.com/tonyd2wild/MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark)). Two Sparks instead of three — so it pairs cleanly with another 2-node model on the same fleet (e.g. DeepSeek-V4 TP=2 on the other pair).
 
-> ⚠️ **This repo documents the launch config + env only — it is NOT the full runnable recipe by itself.** You MUST use the matching **patched vLLM container / mod stack** (see [Credits](#credits)). Stock vLLM, or a container missing these patches, is expected to **reject NVFP4 KV or OOM**. The `nvfp4` KV path depends on the patched DiffKV attention backend. See [Avoiding OOM](#avoiding-oom--full-reproduction) before you run it.
+> ⚠️ **This repo is the launch config + env + the patch mods — but it runs on top of a specific patched vLLM dev build, not stock vLLM.** The 6 required mods are now **vendored in [`recipe/mods/`](recipe/mods)** (apply them with [`recipe/apply-mods.sh`](recipe/apply-mods.sh) — see [Runtime stack used](#runtime-stack-used)). Stock `pip install vllm` will still **reject NVFP4 KV or OOM** — the mods patch a vLLM dev build (`0.21.1rc1.dev85+gd87ee1893`), they are not a stock-vLLM plugin. The `nvfp4` KV path depends on the DiffKV attention backend in `recipe/mods/nvfp4-kv-diffkv/`. See [Avoiding OOM](#avoiding-oom--full-reproduction) before you run it.
 
 ---
 
@@ -124,6 +124,14 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 .
 ├── README.md
 ├── recipe/{env.sh, launch.sh, run-head.sh, run-worker.sh}
+│   ├── apply-mods.sh                     # docker-cp + run each mod into the container
+│   └── mods/                             # the 6 patch mods (VENDORED — apply before launch)
+│       ├── drop-caches/run.sh
+│       ├── ray-keep-node-nccl-hca/run.sh
+│       ├── fix-prometheus-instrumentator-router/run.sh
+│       ├── fix-mimo-v2-vllm/run.sh       # fetches vLLM PR #41797 + MiMo-V2 fixes
+│       ├── fix-modelopt-mixed-mxfp8/run.sh
+│       └── nvfp4-kv-diffkv/{run.sh, triton_attn_diffkv.py, triton_unified_attention_diffkv.py, wmma_decode.py}
 └── benchmarks/
     ├── thinking-off-1M-69eval.{md,json}   # 97.8 quality @ 1M ctx
     ├── thinking-off-69eval.{md,json}      # 97.8 quality @ 500K ctx
@@ -151,7 +159,16 @@ This repo documents the launch config + reproducibility notes, but the successfu
 - `ray-keep-node-nccl-hca` — adds `NCCL_IB_HCA` to Ray's non-carry-over env so each node keeps its own RoCE HCA (Ray won't copy the head's to workers)
 - `fix-prometheus-instrumentator-router` — `prometheus_fastapi_instrumentator` router compat patch (else vLLM startup throws)
 - `drop-caches` — page-cache drop before load
-A container missing these is **not** the same runtime and may reject NVFP4 KV, OOM, or freeze during MTP drafter/profiling. (They're applied via an `apply-mods.sh` that `docker cp`s each mod dir in and runs its `run.sh`.)
+A container missing these is **not** the same runtime and may reject NVFP4 KV, OOM, or freeze during MTP drafter/profiling.
+
+**The mods are vendored in [`recipe/mods/`](recipe/mods).** Apply them after the container is up, on **both** nodes:
+```bash
+bash recipe/apply-mods.sh <container_name>   # docker-cp's each mod in + runs its run.sh
+```
+Licensing of the vendored files (each carries its own SPDX header):
+- `nvfp4-kv-diffkv/triton_attn_diffkv.py` + `triton_unified_attention_diffkv.py` — **Apache-2.0**, derived from the vLLM project (slim DiffKV forks; headers preserved).
+- `nvfp4-kv-diffkv/wmma_decode.py` — **original work** (Apache-2.0, © 2026 LaNarde "Tony" DeAngelo / 2Wild): a custom WMMA tensor-core flash-decode kernel, ~2.3× faster than the Triton path. **Optional** (gated by `VLLM_WMMA_DECODE=1`) — the result reproduces without it on the Triton path.
+- the four `run.sh` patch scripts (`drop-caches`, `ray-keep-node-nccl-hca`, `fix-prometheus-instrumentator-router`, `fix-modelopt-mixed-mxfp8`) + `fix-mimo-v2-vllm` (which fetches vLLM [PR #41797](https://github.com/vllm-project/vllm/pull/41797)) — MIT, per this repo's LICENSE.
 
 **Launch method** (manual worker/head): clean-stop old containers+Ray → start worker container → start head container → apply mods on both → start Ray with object-store capped to 1GiB on every node → force Ray/vLLM host IPs to the RoCE/static IPs → confirm Ray sees 2 GPUs → launch vLLM on head. Use `recipe/run-worker.sh`, `recipe/run-head.sh`, `recipe/launch.sh` (don't treat `launch.sh` alone as the full recipe — it assumes the patched container + Ray cluster + mods are already correct).
 
