@@ -4,7 +4,7 @@ Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2
 
 This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark](https://github.com/tonyd2wild/MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark)). Two Sparks instead of three — so it pairs cleanly with another 2-node model on the same fleet (e.g. DeepSeek-V4 TP=2 on the other pair).
 
-> ⚠️ Experimental. The `nvfp4` KV path depends on the matching patched attention backend (DiffKV). Without the mod stack, vLLM will reject NVFP4 KV.
+> ⚠️ **This repo documents the launch config + env only — it is NOT the full runnable recipe by itself.** You MUST use the matching **patched vLLM container / mod stack** (see [Credits](#credits)). Stock vLLM, or a container missing these patches, is expected to **reject NVFP4 KV or OOM**. The `nvfp4` KV path depends on the patched DiffKV attention backend. See [Avoiding OOM](#avoiding-oom--full-reproduction) before you run it.
 
 ---
 
@@ -71,6 +71,24 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 3. **`safetensors`, not InstantTensor.** The MTP + NVFP4-KV path wedged under InstantTensor on the drafter load. Safetensors is slower to load but stable.
 4. **Worker-first Ray startup**, then head, then launch vLLM from the head.
 
+## Avoiding OOM / full reproduction
+
+The 1M headline is real (live: `GPU KV cache size: 1,970,104 tokens`, `1.97x` concurrency), but at `gpu-memory-utilization 0.84` the setup is **not forgiving**. Most OOM reports are NOT the headline flags — they're a different, incomplete environment. To reproduce without OOM:
+
+1. **Use the patched container/mod stack** (non-optional): `nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, `fix-modelopt-mixed-mxfp8`, `ray-keep-node-nccl-hca`, `fix-prometheus-instrumentator-router`, `drop-caches`. Stock vLLM will fail/OOM.
+2. **Cap the Ray plasma object store on EVERY node** — `--object-store-memory=1073741824`. Uncapped Ray reserves a huge store and steals unified memory → OOM on weight load/profile. Use the included [`recipe/run-head.sh`](recipe/run-head.sh) + [`recipe/run-worker.sh`](recipe/run-worker.sh).
+3. **Worker-first clean start:** stop old containers/Ray → start worker container → start head container → apply mods on both → `run-head.sh` (head Ray) → `run-worker.sh` (worker joins) → wait until `ray status` shows **2 GPUs** → `source env.sh && bash launch.sh`.
+4. **Set the memory env vars** (in `env.sh`): `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and `RAY_memory_monitor_refresh_ms=0` are the two that most prevent the OOM report.
+5. **No stale processes** — kill any leftover vLLM/Ray containers first; they hold unified memory.
+
+**If 1M still OOMs — boot the 500K fallback first, then climb:**
+```bash
+# Step 1: prove 500K serves
+MAX_MODEL_LEN=500000   MAX_NUM_SEQS=2   GPU_MEMORY_UTILIZATION=0.82
+# Step 2: only after 500K is live, go 1M
+MAX_MODEL_LEN=1000000  MAX_NUM_SEQS=4   GPU_MEMORY_UTILIZATION=0.84
+```
+
 ## Repro checklist
 
 1. Worker-first Ray; `safetensors`; Omni arch; `--kv-cache-dtype nvfp4` + `triton_attn_diffkv`; MTP1.
@@ -83,7 +101,7 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 ```
 .
 ├── README.md
-├── recipe/{env.sh, launch.sh}
+├── recipe/{env.sh, launch.sh, run-head.sh, run-worker.sh}
 └── benchmarks/
     ├── thinking-off-1M-69eval.{md,json}   # 97.8 quality @ 1M ctx
     ├── thinking-off-69eval.{md,json}      # 97.8 quality @ 500K ctx

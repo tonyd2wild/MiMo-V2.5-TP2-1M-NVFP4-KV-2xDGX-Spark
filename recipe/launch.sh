@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# MiMo-V2.5 Omni TP=2 / 500K / MTP1 / NVFP4-KV — launch (run on the HEAD node, after `source env.sh`).
-# Order: start Ray workers first, then the Ray head, then this launch from the head.
+# MiMo-V2.5 Omni TP=2 / 1M / MTP1 / NVFP4-KV — launch (run on the HEAD node, after `source env.sh`).
+# Order: start Ray workers first (run-worker.sh), then the Ray head (run-head.sh), then this launch from the head.
+# REQUIRES the patched vLLM container/mod stack (see README Credits) — stock vLLM will reject NVFP4 KV / OOM.
 set -euo pipefail
 : "${MODEL_PATH:?set MODEL_PATH in env.sh}"
 : "${SERVED_MODEL_NAME:=MiMo-V2.5-NVFP4}"
@@ -41,5 +42,6 @@ vllm serve "${MODEL_PATH}" \
 
 # Smoke test (from any node):
 #   curl http://<head-ip>:8000/v1/chat/completions -H 'Content-Type: application/json' \
-#     -d '{"model":"MiMo-V2.5-NVFP4","messages":[{"role":"user","content":"Reply exactly: OK 500K MTP1"}],
+#     -d '{"model":"MiMo-V2.5-NVFP4","messages":[{"role":"user","content":"Reply exactly: OK 1M MTP1"}],
 #          "max_tokens":16,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}'
+#   Expect: "OK 1M MTP1"

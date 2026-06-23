@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MiMo-V2.5 Omni TP=2 / 500K / MTP1 / NVFP4-KV — environment
+# MiMo-V2.5 Omni TP=2 / 1M / MTP1 / NVFP4-KV — environment
 # Apply on BOTH nodes (worker + head) inside the vLLM container.
 
 # --- core serving shape ---
@@ -11,6 +11,15 @@ export GPU_MEMORY_UTILIZATION=0.84      # 0.80 just-barely OOMs at 500K (caps ~4
 export ENABLE_MTP=1
 export MTP_SPEC_TOKENS=1                # MTP1 > MTP2 here (MTP2 halves KV pool, no speed gain)
 export ENFORCE_EAGER=1
+
+# --- memory / Ray stability (CRITICAL for avoiding OOM at 1M) ---
+# Without these the 0.84 GMU + 1M pool is unforgiving and users hit OOM on load/profile.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # avoids fragmentation OOM
+export RAY_memory_monitor_refresh_ms=0                    # stops Ray's 95% monitor false-killing TP0 post-warmup
+export VLLM_USE_RAY_V2_EXECUTOR_BACKEND=0
+export VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM=0
+# Cap the Ray plasma object store on EVERY node (see run-head.sh / run-worker.sh):
+#   ray start ... --object-store-memory=1073741824   # 1 GiB; uncapped Ray steals unified mem -> OOM
 
 # --- NVFP4 weights + KV + WMMA decode ---
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
