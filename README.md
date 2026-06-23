@@ -1,6 +1,6 @@
 # MiMo-V2.5 Omni · TP=2 · **1M context** · NVFP4 KV on 2× DGX Spark
 
-Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2.5-NVFP4) (Omni: text + image + video + audio) tensor-parallel across **two NVIDIA DGX Spark (GB10)** boxes, with **4-bit `nvfp4` KV cache** + MTP speculative decoding — serving a **1,000,000-token** context with a **~1.01M-token KV pool**.
+Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2.5-NVFP4) (Omni: text + image + video + audio) tensor-parallel across **two NVIDIA DGX Spark (GB10)** boxes, with **4-bit `nvfp4` KV cache** + MTP speculative decoding — serving a **1,000,000-token** context with a **~1.97M-token KV pool**.
 
 This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark](https://github.com/tonyd2wild/MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark)). Two Sparks instead of three — so it pairs cleanly with another 2-node model on the same fleet (e.g. DeepSeek-V4 TP=2 on the other pair).
 
@@ -17,7 +17,7 @@ This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDG
 | Parallelism | TP=2, PP=1 |
 | **Max context / request** | **1,000,000** (verified, benched) |
 | KV cache dtype | **`nvfp4`** (4-bit) |
-| GPU KV pool | **~1.01M tokens** |
+| GPU KV pool | **~1.97M tokens** |
 | Speculative decoding | MTP, `num_speculative_tokens=1` |
 | Loader | `safetensors` |
 | GPU mem util | 0.84 |
@@ -41,10 +41,10 @@ This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDG
 
 ## Context + concurrency: how the shared KV pool works
 
-The **~1.01M-token KV pool is shared** across all in-flight requests. `max_model_len` caps any *single* request; `max_num_seqs` caps how many run at once; the pool is the real budget.
+The **~1.97M-token KV pool is shared** across all in-flight requests. `max_model_len` caps any *single* request; `max_num_seqs` caps how many run at once; the pool is the real budget.
 
-- **One deep request → up to the full 1M tokens** (~1.01× — it fits with a sliver to spare).
-- **Many moderate requests → high concurrency.** e.g. **4 agents × 100K = 400K** = ~40% of the pool → all 4 run in parallel with room for ~6 more (~10 concurrent 100K agents before KV bites).
+- **One deep request → up to the full 1M tokens** (~1.97× — fits ~2 full 1M requests).
+- **Many moderate requests → high concurrency.** e.g. **4 agents × 100K = 400K** = ~20% of the pool → all 4 run in parallel with lots of headroom (~20 concurrent 100K agents before KV bites).
 - The only thing you can't do: **4 agents all at a full 1M simultaneously** (that'd need 4M) → vLLM just queues the overflow until room frees.
 
 **Tuning `max_num_seqs`:** set it to **2** if your workload is single huge (500K–1M) requests; set it to **4+** for multi-agent / many-moderate-context work (the config here ships `max_num_seqs=4`, `gpu-memory-utilization=0.84` so a full 1M request still fits alongside the extra seq slots).
@@ -94,9 +94,9 @@ The patched **mods** (`nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, etc.) are NOT vendo
 
 ## Claims we can / can't make
 
-**Safe:** boots on 2× DGX Spark at TP=2 / MTP1 / NVFP4 KV; serves `max_model_len=1000000` (verified + benched at 97.8 quality); ~1.01M-token KV pool; MTP1 > MTP2; safetensors is the stable loader; thinking-OFF beats thinking-ON for tool/agent tasks.
+**Safe:** boots on 2× DGX Spark at TP=2 / MTP1 / NVFP4 KV; serves `max_model_len=1000000` (verified + benched at 97.8 quality); ~1.97M-token KV pool; MTP1 > MTP2; safetensors is the stable loader; thinking-OFF beats thinking-ON for tool/agent tasks.
 
-**Not yet:** not production-stable for many simultaneous *full-1M* agents (the pool holds ~one 1M request); no audio/video quality claims without separate modality evals.
+**Not yet:** not production-stable for many simultaneous *full-1M* agents (the pool holds ~2 full 1M requests); no audio/video quality claims without separate modality evals.
 
 ## Credits
 
@@ -125,4 +125,4 @@ Explicit so inspiration + upstream work are credited cleanly.
 
 MIT (covers this repo's recipe docs + config only — not the upstream mods). See [LICENSE](LICENSE).
 
-*Validated on 2× DGX Spark, 2026-06. 1M context boots + benches at 97.8 quality; pool holds ~one full-1M request (~1.01×), or ~10 concurrent 100K-context agents.*
+*Validated on 2× DGX Spark, 2026-06. 1M context boots + benches at 97.8 quality; pool holds ~2 full-1M requests (~1.97×), or ~20 concurrent 100K-context agents.*
