@@ -2,7 +2,7 @@
 # MiMo-V2.5 Omni TP=2 / 1M / MTP1 / NVFP4-KV — environment
 # Apply on BOTH nodes (worker + head) inside the vLLM container.
 #
-# vLLM BUILD: 0.21.1rc1.dev85+gd87ee1893 (commit d87ee1893, ~2026-05-18, CUDA 12.2/cu132) —
+# vLLM BUILD: 0.21.1rc1.dev85+gd87ee1893 (commit d87ee1893, ~2026-05-18, CUDA 13.2/cu132; torch 2.11.0+cu130) —
 #   a DEV build, NOT a released pip wheel — PLUS the 6 patch mods (see README "Runtime stack
 #   used"). Stock `pip install vllm` will reject --kv-cache-dtype nvfp4 / triton_attn_diffkv /
 #   the MiMoV2OmniForCausalLM arch. Ray is REQUIRED (mp executor is single-host; can't span 2 boxes).
