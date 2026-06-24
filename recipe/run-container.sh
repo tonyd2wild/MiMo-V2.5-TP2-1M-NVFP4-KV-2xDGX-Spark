@@ -4,11 +4,11 @@
 # remotely; Ray launches the TP worker/rank inside the worker's own container.
 # After this on each node: `bash recipe/apply-mods.sh "$CONTAINER"`, then Ray + vLLM.
 #
-# IMAGE = the patched vLLM DEV-build image (see README "Reproduce from scratch").
-#   It is NOT a public pull and the mods are NOT baked in — they're applied at
-#   runtime via apply-mods.sh after this container is up.
+# IMAGE = the patched vLLM DEV-build image. Defaults to the public published image
+#   (docker auto-pulls it on first run). The mods are NOT baked in — they're applied
+#   at runtime via apply-mods.sh after this container is up.
 set -euo pipefail
-: "${IMAGE:?set IMAGE to your patched vLLM dev-build image, e.g. vllm-mimo-omni-mtp2-1m-audio-exp:20260620}"
+: "${IMAGE:=ghcr.io/tonyd2wild/mimo-v2.5-tp2-1m-nvfp4kv:20260620}"
 : "${CONTAINER:=vllm_mimo_tp2}"
 : "${HF_CACHE:=$HOME/.cache/huggingface}"      # model weights live here; mounted into the container
 : "${RECIPE_DIR:=$PWD}"                         # this repo's recipe/ dir → reachable in-container

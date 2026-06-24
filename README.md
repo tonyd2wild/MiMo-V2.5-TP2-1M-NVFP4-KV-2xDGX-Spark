@@ -84,14 +84,18 @@ hf download lukealonso/MiMo-V2.5-NVFP4 \
 ```
 
 ### 2. The container — on BOTH nodes (this is the missing piece)
-⚠️ **The exact image is a CUSTOM local build, not a public pull.** It is a vLLM **dev build** (`0.21.1rc1.dev85+gd87ee1893`) compiled for GB10 (`TORCH_CUDA_ARCH_LIST=12.1a`) on a **CUDA 13.2 arm64/sbsa** base + `torch 2.11.0` + a system NCCL `.deb` + `ray`/`fastsafetensors`. There is no Dockerfile shipped (it was built from wheels). The mods are **NOT baked into the image** — they're applied at runtime in step 3. To rebuild the image you need that vLLM dev wheel built for sm_121; if you already have a working GB10 vLLM dev image, use it as `$IMAGE`.
-
+The patched vLLM **dev-build** image is **published** — `run-container.sh` defaults to it and Docker auto-pulls on first run:
+```
+ghcr.io/tonyd2wild/mimo-v2.5-tp2-1m-nvfp4kv:20260620   (~20 GB; arm64/GB10)
+```
 Start the container on **EACH** Spark (head AND worker — the worker is not remote-driven; Ray spawns the TP rank inside the worker's own container):
 ```bash
-IMAGE=<your-patched-vllm-dev-image> CONTAINER=vllm_mimo_tp2 RECIPE_DIR=$PWD/recipe \
-  bash recipe/run-container.sh
+bash recipe/run-container.sh        # pulls + runs the published image
+# (override with IMAGE=<your-own-image> if you built your own)
 ```
-That runs: `docker run -d --gpus all --network host --ipc host --shm-size 16g --device /dev/infiniband --ulimit memlock=-1 -v ~/.cache/huggingface:/root/.cache/huggingface ... sleep infinity`.
+It runs: `docker run -d --gpus all --network host --ipc host --shm-size 16g --device /dev/infiniband --ulimit memlock=-1 -v ~/.cache/huggingface:/root/.cache/huggingface ... sleep infinity`.
+
+What the image is: a vLLM **dev build** (`0.21.1rc1.dev85+gd87ee1893`) compiled for GB10 (`TORCH_CUDA_ARCH_LIST=12.1a`) on a **CUDA 13.2 arm64/sbsa** base + `torch 2.11.0` + NCCL + `ray`/`fastsafetensors`. The mods are **NOT baked in** — they're applied at runtime in step 3. (It's a from-wheels build; no Dockerfile is shipped, so use the published image rather than rebuilding.)
 
 ### 3. Apply the mods — on BOTH nodes, after the container is up
 ```bash
