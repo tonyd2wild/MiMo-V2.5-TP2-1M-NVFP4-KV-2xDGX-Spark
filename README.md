@@ -66,6 +66,49 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 --tool-call-parser mimo --reasoning-parser mimo
 ```
 
+## Reproduce from scratch (start here)
+
+> The recipe files (`launch.sh`, `run-head.sh`, etc.) all run **inside a container** — so the very first step is getting that container onto **both** Sparks. This is the step people miss.
+
+### Prerequisites
+- **2× NVIDIA DGX Spark (GB10)**, each with its ConnectX RoCE NIC, on a direct-cable or switched RoCE link between them.
+- Docker with GPU access (`--gpus all` / NVIDIA container toolkit) on both.
+- The model weights cached on **both** nodes (TP=2 loads shards on each).
+- NCCL 2.30u1-class; the validated host build was CUDA 13.2 (arm64/sbsa); driver 580.x.
+
+### 1. Model weights — on BOTH nodes
+```bash
+hf download lukealonso/MiMo-V2.5-NVFP4 \
+  --revision a147dd04d6cf861e43b2d783dcde23b53ab7ee68
+# export HF_TOKEN=... first if the repo is gated. Lands in ~/.cache/huggingface (mounted into the container).
+```
+
+### 2. The container — on BOTH nodes (this is the missing piece)
+⚠️ **The exact image is a CUSTOM local build, not a public pull.** It is a vLLM **dev build** (`0.21.1rc1.dev85+gd87ee1893`) compiled for GB10 (`TORCH_CUDA_ARCH_LIST=12.1a`) on a **CUDA 13.2 arm64/sbsa** base + `torch 2.11.0` + a system NCCL `.deb` + `ray`/`fastsafetensors`. There is no Dockerfile shipped (it was built from wheels). The mods are **NOT baked into the image** — they're applied at runtime in step 3. To rebuild the image you need that vLLM dev wheel built for sm_121; if you already have a working GB10 vLLM dev image, use it as `$IMAGE`.
+
+Start the container on **EACH** Spark (head AND worker — the worker is not remote-driven; Ray spawns the TP rank inside the worker's own container):
+```bash
+IMAGE=<your-patched-vllm-dev-image> CONTAINER=vllm_mimo_tp2 RECIPE_DIR=$PWD/recipe \
+  bash recipe/run-container.sh
+```
+That runs: `docker run -d --gpus all --network host --ipc host --shm-size 16g --device /dev/infiniband --ulimit memlock=-1 -v ~/.cache/huggingface:/root/.cache/huggingface ... sleep infinity`.
+
+### 3. Apply the mods — on BOTH nodes, after the container is up
+```bash
+bash recipe/apply-mods.sh vllm_mimo_tp2
+```
+⚠️ `fix-mimo-v2-vllm` curls vLLM **PR #41797** at apply-time → the container needs **outbound GitHub access** during this step (vendor `41797.diff` locally if your nodes are network-restricted).
+
+### 4. Bring up Ray + vLLM (the runbook)
+```bash
+# find your RoCE IP + HCA on each node first:  ibdev2netdev ; ip -4 addr show <iface>
+# HEAD container:    source recipe/env.sh && HEAD_ROCE_IP=<head>   bash recipe/run-head.sh
+# WORKER container:  source recipe/env.sh && HEAD_ROCE_IP=<head> WORKER_ROCE_IP=<worker> bash recipe/run-worker.sh
+# HEAD: wait for 2 GPUs →  until ray status 2>/dev/null | grep -qE '2\.0/2\.0 GPU'; do sleep 2; done
+# HEAD: launch vLLM    →  source recipe/env.sh && bash recipe/launch.sh
+```
+Containers come up worker-then-head; Ray comes up head-then-worker; vLLM launches only on the head once Ray sees 2 GPUs. `launch.sh` honors `env.sh`, so the 500K→1M fallback below works by just exporting the vars before step 4.
+
 ## Hard-won lessons (what failed first)
 
 1. **GPU mem util is tight.** 500K barely fit at 0.80 (needed 0.82); the full **1M + `max_num_seqs=4`** wants **0.84** so a 1M request still fits alongside the extra seq slots.
@@ -126,7 +169,8 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 .
 ├── README.md
 ├── recipe/{env.sh, launch.sh, run-head.sh, run-worker.sh}
-│   ├── apply-mods.sh                     # docker-cp + run each mod into the container
+│   ├── run-container.sh                  # docker run the patched container — RUN ON BOTH NODES first
+│   ├── apply-mods.sh                     # docker-cp + run each mod into the container (both nodes)
 │   └── mods/                             # the 6 patch mods (VENDORED — apply before launch)
 │       ├── drop-caches/run.sh
 │       ├── ray-keep-node-nccl-hca/run.sh
@@ -140,7 +184,7 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
     └── thinking-on-69eval.{md,json}       # 90.6 quality (thinking on)
 ```
 
-The patched **mods** (`nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, etc.) are NOT vendored — they carry upstream licenses. See **Credits** and pull from upstream.
+The 6 patch **mods are vendored in [`recipe/mods/`](recipe/mods)** and applied at runtime via [`recipe/apply-mods.sh`](recipe/apply-mods.sh) (see [Runtime stack used](#runtime-stack-used) for what each does + licensing).
 
 ## Runtime stack used
 
@@ -148,7 +192,7 @@ This repo documents the launch config + reproducibility notes, but the successfu
 
 **What the stack actually IS (positive ID):** vLLM **`0.21.1rc1.dev85+gd87ee1893`** (commit `d87ee1893`, ~2026-05-18, CUDA 12.2 / `cu132`) — a **dev build, NOT a released pip wheel** — **+ the 6 local-patch mods below + Ray** for the 2-node split. That's the whole runtime. Because it's a dev build plus patches, **stock `pip install vllm` will NOT have** the NVFP4-KV / DiffKV / MiMoV2Omni code paths and will reject `--kv-cache-dtype nvfp4`, `--attention-backend triton_attn_diffkv`, and the `MiMoV2OmniForCausalLM` arch override.
 
-**Container:** custom patched image, local tag `vllm-mimo-omni-mtp2-1m-audio-exp:20260620` (name is historical from earlier MTP2 experiments; final recipe is **MTP1**: `--speculative-config '{"method":"mtp","num_speculative_tokens":1}'`). Not on a public registry.
+**Container:** a custom vLLM **dev-build** image (local tag `vllm-mimo-omni-mtp2-1m-audio-exp:20260620`, ~19.9 GB; CUDA 13.2 arm64/sbsa + torch 2.11.0 + the vLLM dev wheel + NCCL + ray/fastsafetensors). The mods are **NOT baked in** — they're applied at runtime by `apply-mods.sh` (so the image is just the dev-build base). Not on a public registry; see [Reproduce from scratch](#reproduce-from-scratch-start-here) for the `docker run` + how to obtain/rebuild it. (The `mtp2` in the tag is historical — the final recipe is **MTP1**.)
 
 **Lineage:** NOT launched through `eugr/spark-vllm-docker`, and NOT a direct run of `HeNryous/mimo-spark-optimized`. Those informed the Spark/RoCE + TP=2 debugging only.
 
