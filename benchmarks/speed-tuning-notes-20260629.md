@@ -448,6 +448,146 @@ Conclusion: block size 64 gives a tiny clean lift over block size 32 C1
 isolation, but still lands in the low-32 tok/s range. Block-table/page shape is
 not enough to reach the 45-55 tok/s target.
 
+### Post-checkpoint concurrency speedup levers
+
+These tests were run after the 1M/C8 checkpoint, using the same 2x DGX Spark
+TP=2 runtime and comparing against the winning eager C8 profile:
+
+```bash
+MAX_MODEL_LEN=1000000
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+BLOCK_SIZE=64
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+ENFORCE_EAGER=1
+```
+
+Winning reference:
+
+| concurrency | aggregate tok/s | aggregate-derived tok/s per stream | acceptance |
+|---:|---:|---:|---:|
+| 2 | 60.2 | 30.1 | 0.829 |
+| 4 | 94.7 | 23.7 | 0.837 |
+| 6 | 141.8 | 23.6 | 0.832 |
+| 8 | 184.1 | 23.0 | 0.867 |
+
+#### `ENFORCE_EAGER=0` at 1M/C8
+
+Config:
+
+```bash
+MAX_MODEL_LEN=1000000
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+BLOCK_SIZE=64
+MTP_SPEC_TOKENS=1
+ENFORCE_EAGER=0
+```
+
+Result: failed before serving. Graph compile/capture began, but KV allocation
+collapsed below what is needed for 1M context.
+
+Failure evidence:
+
+```text
+Compiling a graph for compile range (1, 2048) takes 11.47 s
+Profiling CUDA graph memory: PIECEWISE=6 (largest=32), FULL=4 (largest=16)
+Available KV cache memory: 0.24 GiB
+Available KV cache memory: -1.42 GiB
+ValueError: To serve at least one request with the model's max seq len
+(1000000), 3.09 GiB KV cache is needed, which is larger than the available
+KV cache memory (0.24 GiB). Estimated maximum model length is 57344.
+```
+
+Retried with:
+
+```bash
+VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+```
+
+This also failed before serving:
+
+```text
+Available KV cache memory: 0.75 GiB
+Available KV cache memory: -1.3 GiB
+Estimated maximum model length is 225280.
+```
+
+Conclusion: CUDA graph mode is not a valid 1M/C8 speedup lever for this profile.
+It cannot preserve enough KV headroom to serve the 1M max length.
+
+#### `MTP_SPEC_TOKENS=2` at 1M/C8
+
+Config:
+
+```bash
+MAX_MODEL_LEN=1000000
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+BLOCK_SIZE=64
+MTP_SPEC_TOKENS=2
+VLLM_MIMO_MTP1_GREEDY_FAST=0
+ENFORCE_EAGER=1
+```
+
+Startup evidence:
+
+```text
+GPU KV cache size: 2,197,421 tokens
+Maximum concurrency for 1,000,000 tokens per request: 2.20x
+Available KV cache memory: 6.78 GiB
+```
+
+Benchmark:
+
+| concurrency | best aggregate tok/s | aggregate-derived tok/s per stream | acceptance |
+|---:|---:|---:|---:|
+| 2 | 48.0 | 24.0 | 0.682 |
+| 4 | 72.3 | 18.1 | 0.628 |
+| 6 | 95.0 | 15.8 | 0.597 |
+| 8 | 107.5 | 13.4 | 0.626 |
+
+Conclusion: MTP2 is a clear non-winner. It slightly increased the reported KV
+pool, but aggregate throughput and acceptance both fell sharply versus MTP1.
+
+#### `MAX_NUM_BATCHED_TOKENS=4096` at 1M/C8
+
+Config:
+
+```bash
+MAX_MODEL_LEN=1000000
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=4096
+BLOCK_SIZE=64
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+ENFORCE_EAGER=1
+```
+
+Startup evidence:
+
+```text
+Available KV cache memory: 9.1 GiB
+Available KV cache memory: 7.2 GiB
+GPU KV cache size: 2,288,537 tokens
+Maximum concurrency for 1,000,000 tokens per request: 2.29x
+```
+
+Benchmark, including C1:
+
+| concurrency | best aggregate tok/s | aggregate-derived tok/s per stream | acceptance |
+|---:|---:|---:|---:|
+| 1 | 30.7 | 30.7 | 0.821 |
+| 2 | 50.2 | 25.1 | 0.861 |
+| 4 | 74.4 | 18.6 | 0.900 |
+| 6 | 97.2 | 16.2 | 0.864 |
+| 8 | 111.2 | 13.9 | 0.871 |
+
+Conclusion: `MAX_NUM_BATCHED_TOKENS=4096` improves reported KV pool to 2.29M
+tokens, but it is not a throughput speedup. Keep `2048` as the serving default
+for the C8 speed checkpoint.
+
 ### MTP3 q_len=4 plus local argmax
 
 Config:
