@@ -232,6 +232,8 @@ Licensing of the vendored files (each carries its own SPDX header):
 
 ## Credits
 
+- **drowzeys ("Keys")** — origin of the NVFP4 KV-cache wiring this build’s nvfp4 KV path descends from ([Keys---Full-GLM-5.2-Quantrio…](https://github.com/drowzeys/Keys---Full-GLM-5.2-Quantrio-INT4-INT8-mixed-8bit-Attention-on-4-x-DGX-Spark-GB10-Cluster)).
+
 Explicit so inspiration + upstream work are credited cleanly.
 
 **Model & serving stack**
