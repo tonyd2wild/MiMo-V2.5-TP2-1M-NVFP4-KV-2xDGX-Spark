@@ -516,6 +516,467 @@ else:
     print('[fix-mimo-v2-vllm] MiMoV2MTP quant mapping and loader already patched')
 PY
 
+# Expose the local-argmax fast path for MiMo MTP. vLLM's proposer can avoid a
+# full-vocab TP all-gather when `use_local_argmax_reduction` is enabled, but only
+# if the draft model implements get_top_tokens().
+python3 - <<'PY'
+from pathlib import Path
+path = Path('/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/mimo_v2_mtp.py')
+text = path.read_text()
+orig = text
+
+old = '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        lm_head: ParallelLMHead,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor:
+        return self.logits_processor(lm_head, hidden_states)
+'''
+new = '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        lm_head: ParallelLMHead,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor:
+        return self.logits_processor(lm_head, hidden_states)
+
+    def get_top_tokens(
+        self,
+        hidden_states: torch.Tensor,
+        lm_head: ParallelLMHead,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor:
+        return self.logits_processor.get_top_tokens(lm_head, hidden_states)
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: MiMoV2MultiTokenPredictor compute_logits anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor | None:
+        return self.model.compute_logits(hidden_states, self.lm_head, spec_step_idx)
+'''
+new = '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor | None:
+        return self.model.compute_logits(hidden_states, self.lm_head, spec_step_idx)
+
+    def get_top_tokens(
+        self,
+        hidden_states: torch.Tensor,
+        spec_step_idx: int = 0,
+    ) -> torch.Tensor:
+        return self.model.get_top_tokens(hidden_states, self.lm_head, spec_step_idx)
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: MiMoV2MTP compute_logits anchor not found')
+    text = text.replace(old, new, 1)
+
+if text != orig:
+    path.write_text(text)
+    print('[fix-mimo-v2-vllm] patched MiMoV2MTP local argmax get_top_tokens')
+else:
+    print('[fix-mimo-v2-vllm] MiMoV2MTP local argmax get_top_tokens already patched')
+
+import ast
+tree = ast.parse(path.read_text(), filename=str(path))
+class_node = next(
+    (
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == 'MiMoV2MTP'
+    ),
+    None,
+)
+if class_node is None or not any(
+    isinstance(node, ast.FunctionDef) and node.name == 'get_top_tokens'
+    for node in class_node.body
+):
+    raise SystemExit('[fix-mimo-v2-vllm] ERROR: MiMoV2MTP.get_top_tokens validation failed')
+print('[fix-mimo-v2-vllm] validated MiMoV2MTP.get_top_tokens')
+PY
+
+# Expose target-side top-token helpers.  This lets a guarded greedy MTP1 path
+# avoid materializing full-vocab target logits when all the request needs is
+# target argmax for rejection sampling.
+python3 - <<'PY'
+from pathlib import Path
+
+patches = [
+    (
+        Path('/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/mimo_v2.py'),
+        '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor | None:
+        logits = self.logits_processor(self.lm_head, hidden_states)
+        return logits
+''',
+        '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor | None:
+        logits = self.logits_processor(self.lm_head, hidden_states)
+        return logits
+
+    def get_top_tokens(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.logits_processor.get_top_tokens(self.lm_head, hidden_states)
+''',
+        'MiMoV2FlashForCausalLM',
+    ),
+    (
+        Path('/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/mimo_v2_omni.py'),
+        '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor | None:
+        return self.language_model.compute_logits(hidden_states)
+''',
+        '''    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor | None:
+        return self.language_model.compute_logits(hidden_states)
+
+    def get_top_tokens(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.language_model.get_top_tokens(hidden_states)
+''',
+        'MiMoV2OmniForCausalLM',
+    ),
+]
+
+for path, old, new, class_name in patches:
+    text = path.read_text()
+    if new not in text:
+        if old not in text:
+            raise SystemExit(
+                f'[fix-mimo-v2-vllm] ERROR: {class_name}.compute_logits anchor not found'
+            )
+        path.write_text(text.replace(old, new, 1))
+        print(f'[fix-mimo-v2-vllm] patched {class_name}.get_top_tokens')
+    else:
+        print(f'[fix-mimo-v2-vllm] {class_name}.get_top_tokens already patched')
+
+import ast
+for path, _, _, class_name in patches:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    class_node = next(
+        (
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ),
+        None,
+    )
+    if class_node is None or not any(
+        isinstance(node, ast.FunctionDef) and node.name == 'get_top_tokens'
+        for node in class_node.body
+    ):
+        raise SystemExit(
+            f'[fix-mimo-v2-vllm] ERROR: {class_name}.get_top_tokens validation failed'
+        )
+print('[fix-mimo-v2-vllm] validated target get_top_tokens helpers')
+PY
+
+# EXPERIMENTAL: greedy MTP1 target top-token fast path.  For plain greedy MTP1
+# requests, rejection sampling only needs target argmax for each draft/bonus
+# row.  When VLLM_MIMO_MTP1_GREEDY_FAST=1 and the strict guard passes, compute
+# top-token ids instead of full target logits, then build the MTP1 sampler
+# output directly.  Any feature needing logits falls back to normal vLLM.
+python3 - <<'PY'
+from pathlib import Path
+path = Path('/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py')
+text = path.read_text()
+orig = text
+
+if '\nimport os\n' not in text:
+    if 'import itertools\n' not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: import anchor not found')
+    text = text.replace('import itertools\n', 'import itertools\nimport os\n', 1)
+
+old = '''    logits: torch.Tensor
+    spec_decode_metadata: SpecDecodeMetadata | None
+    spec_decode_common_attn_metadata: CommonAttentionMetadata | None
+'''
+new = '''    logits: torch.Tensor | None
+    greedy_spec_top_token_ids: torch.Tensor | None
+    spec_decode_metadata: SpecDecodeMetadata | None
+    spec_decode_common_attn_metadata: CommonAttentionMetadata | None
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: ExecuteModelState anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''    def _sample(
+        self,
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> SamplerOutput:
+'''
+new = '''    def _mimo_mtp1_greedy_fast_guard(
+        self,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> bool:
+        if os.environ.get("VLLM_MIMO_MTP1_GREEDY_FAST", "0") != "1":
+            return False
+        if spec_decode_metadata is None or self.num_spec_tokens != 1:
+            return False
+        if not hasattr(self.model, "get_top_tokens"):
+            return False
+        if any(num_draft != 1 for num_draft in spec_decode_metadata.num_draft_tokens):
+            return False
+        sampling_metadata = self.input_batch.sampling_metadata
+        logitsprocs = sampling_metadata.logitsprocs
+        has_logitsprocs = bool(logitsprocs.argmax_invariant) or bool(
+            logitsprocs.non_argmax_invariant
+        )
+        thinking_holder = sampling_metadata.thinking_budget_state_holder
+        has_thinking_budget = (
+            thinking_holder is not None
+            and thinking_holder.has_tracked_requests()
+        )
+        return (
+            sampling_metadata.all_greedy
+            and sampling_metadata.max_num_logprobs is None
+            and not sampling_metadata.logprob_token_ids
+            and sampling_metadata.no_penalties
+            and sampling_metadata.allowed_token_ids_mask is None
+            and not sampling_metadata.bad_words_token_ids
+            and not has_logitsprocs
+            and not self.num_prompt_logprobs
+            and not has_thinking_budget
+        )
+
+    def _sample_mimo_mtp1_greedy_fast(
+        self,
+        greedy_spec_top_token_ids: torch.Tensor,
+        spec_decode_metadata: SpecDecodeMetadata,
+    ) -> SamplerOutput:
+        target_token_ids = greedy_spec_top_token_ids.index_select(
+            0,
+            spec_decode_metadata.target_logits_indices.long(),
+        ).long()
+        bonus_token_ids = greedy_spec_top_token_ids.index_select(
+            0,
+            spec_decode_metadata.bonus_logits_indices.long(),
+        ).long()
+        draft_token_ids = spec_decode_metadata.draft_token_ids.long()
+        accepted = draft_token_ids.eq(target_token_ids)
+
+        output_token_ids = torch.full(
+            (len(spec_decode_metadata.num_draft_tokens), 2),
+            -1,
+            dtype=torch.int32,
+            device=draft_token_ids.device,
+        )
+        output_token_ids[:, 0] = torch.where(
+            accepted,
+            draft_token_ids,
+            target_token_ids,
+        ).to(torch.int32)
+        output_token_ids[:, 1] = torch.where(
+            accepted,
+            bonus_token_ids,
+            output_token_ids[:, 1].long(),
+        ).to(torch.int32)
+        return SamplerOutput(
+            sampled_token_ids=output_token_ids,
+            logprobs_tensors=None,
+        )
+
+    def _sample(
+        self,
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+        greedy_spec_top_token_ids: torch.Tensor | None = None,
+    ) -> SamplerOutput:
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: _sample anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''        self._maybe_observe_dspark_position0_quality(
+            spec_decode_metadata,
+            logits,
+        )
+        draft_probs = self._get_spec_decode_draft_probs(spec_decode_metadata)
+        sampler_output = self.rejection_sampler(
+            spec_decode_metadata,
+            draft_probs,
+            logits,
+            sampling_metadata,
+        )
+        return sampler_output
+'''
+new = '''        self._maybe_observe_dspark_position0_quality(
+            spec_decode_metadata,
+            logits,
+        )
+        if greedy_spec_top_token_ids is not None:
+            return self._sample_mimo_mtp1_greedy_fast(
+                greedy_spec_top_token_ids,
+                spec_decode_metadata,
+            )
+
+        draft_probs = self._get_spec_decode_draft_probs(spec_decode_metadata)
+        sampler_output = self.rejection_sampler(
+            spec_decode_metadata,
+            draft_probs,
+            logits,
+            sampling_metadata,
+        )
+        return sampler_output
+'''
+if new not in text:
+    if old not in text:
+        old = '''        draft_probs = self._get_spec_decode_draft_probs(spec_decode_metadata)
+        sampler_output = self.rejection_sampler(
+            spec_decode_metadata,
+            draft_probs,
+            logits,
+            sampling_metadata,
+        )
+        return sampler_output
+'''
+        new = '''        if greedy_spec_top_token_ids is not None:
+            return self._sample_mimo_mtp1_greedy_fast(
+                greedy_spec_top_token_ids,
+                spec_decode_metadata,
+            )
+
+        draft_probs = self._get_spec_decode_draft_probs(spec_decode_metadata)
+        sampler_output = self.rejection_sampler(
+            spec_decode_metadata,
+            draft_probs,
+            logits,
+            sampling_metadata,
+        )
+        return sampler_output
+'''
+        if old not in text:
+            raise SystemExit('[fix-mimo-v2-vllm] ERROR: rejection sampler anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''                sample_hidden_states = hidden_states[logits_indices]
+                logits = self.model.compute_logits(sample_hidden_states)
+'''
+new = '''                sample_hidden_states = hidden_states[logits_indices]
+                greedy_spec_top_token_ids = None
+                if self._mimo_mtp1_greedy_fast_guard(spec_decode_metadata):
+                    greedy_spec_top_token_ids = self.model.get_top_tokens(
+                        sample_hidden_states
+                    )
+                    logits = None
+                else:
+                    logits = self.model.compute_logits(sample_hidden_states)
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: target logits anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''                sample_hidden_states = hidden_states[logits_indices]
+                if not get_pp_group().is_last_rank:
+'''
+new = '''                sample_hidden_states = hidden_states[logits_indices]
+                greedy_spec_top_token_ids = None
+                if not get_pp_group().is_last_rank:
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: PP sample_hidden_states anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''            scheduler_output,
+            logits,
+            spec_decode_metadata,
+'''
+new = '''            scheduler_output,
+            logits,
+            greedy_spec_top_token_ids,
+            spec_decode_metadata,
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: ExecuteModelState init anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''            scheduler_output,
+            logits,
+            spec_decode_metadata,
+'''
+new = '''            scheduler_output,
+            logits,
+            greedy_spec_top_token_ids,
+            spec_decode_metadata,
+'''
+if text.count(new) < 2:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: ExecuteModelState unpack anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''        # Apply structured output bitmasks if present.
+        if grammar_output is not None:
+            apply_grammar_bitmask(
+                scheduler_output, grammar_output, self.input_batch, logits
+            )
+'''
+new = '''        # Apply structured output bitmasks if present. Structured output needs
+        # full logits, so any speculative top-token fast path falls back here.
+        if grammar_output is not None:
+            if logits is None:
+                logits = self.model.compute_logits(sample_hidden_states)
+                greedy_spec_top_token_ids = None
+            apply_grammar_bitmask(
+                scheduler_output, grammar_output, self.input_batch, logits
+            )
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: grammar fallback anchor not found')
+    text = text.replace(old, new, 1)
+
+old = '''            sampler_output = self._sample(logits, spec_decode_metadata)
+'''
+new = '''            sampler_output = self._sample(
+                logits,
+                spec_decode_metadata,
+                greedy_spec_top_token_ids,
+            )
+'''
+if new not in text:
+    if old not in text:
+        raise SystemExit('[fix-mimo-v2-vllm] ERROR: _sample call anchor not found')
+    text = text.replace(old, new, 1)
+
+if text != orig:
+    path.write_text(text)
+    print('[fix-mimo-v2-vllm] patched greedy MTP1 target top-token fast path')
+else:
+    print('[fix-mimo-v2-vllm] greedy MTP1 target top-token fast path already patched')
+
+import ast
+ast.parse(path.read_text(), filename=str(path))
+if 'VLLM_MIMO_MTP1_GREEDY_FAST' not in path.read_text():
+    raise SystemExit('[fix-mimo-v2-vllm] ERROR: greedy fast-path marker missing')
+print('[fix-mimo-v2-vllm] validated greedy MTP1 target top-token fast path')
+PY
+
 # MiMo-V2.5 Omni checkpoints may keep the raw HF architecture as
 # MiMoV2ForCausalLM even though the target model is resolved to
 # MiMoV2OmniForCausalLM because vision/audio config is present or because the

@@ -1,0 +1,134 @@
+[
+  {
+    "case": "image",
+    "status": 200,
+    "elapsed_s": 1.512118094949983,
+    "ok_http": true,
+    "text": "Based on the image provided:\n\n*   **Two main colors:** Red and Blue.\n*   **Shape in the center:** A circle (or circle within a circle).",
+    "raw": {
+      "id": "chatcmpl-8c2fad7ab6a36b85",
+      "object": "chat.completion",
+      "created": 1782740661,
+      "model": "MiMo-V2.5-NVFP4",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "Based on the image provided:\n\n*   **Two main colors:** Red and Blue.\n*   **Shape in the center:** A circle (or circle within a circle).",
+            "refusal": null,
+            "annotations": null,
+            "audio": null,
+            "function_call": null,
+            "tool_calls": [],
+            "reasoning": null
+          },
+          "logprobs": null,
+          "finish_reason": "stop",
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": "vllm-0.21.1rc1.dev85+gd87ee1893.d20260518-tp2-95a66e77",
+      "usage": {
+        "prompt_tokens": 115,
+        "total_tokens": 150,
+        "completion_tokens": 35,
+        "prompt_tokens_details": null
+      },
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "prompt_text": null,
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "case": "audio",
+    "status": 200,
+    "elapsed_s": 5.649038351024501,
+    "ok_http": true,
+    "text": "The audio is a simple tone.",
+    "raw": {
+      "id": "chatcmpl-a1a1300ab6255be5",
+      "object": "chat.completion",
+      "created": 1782740663,
+      "model": "MiMo-V2.5-NVFP4",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "The audio is a simple tone.",
+            "refusal": null,
+            "annotations": null,
+            "audio": null,
+            "function_call": null,
+            "tool_calls": [],
+            "reasoning": null
+          },
+          "logprobs": null,
+          "finish_reason": "stop",
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": "vllm-0.21.1rc1.dev85+gd87ee1893.d20260518-tp2-95a66e77",
+      "usage": {
+        "prompt_tokens": 57,
+        "total_tokens": 65,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null
+      },
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "prompt_text": null,
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "case": "video",
+    "status": 200,
+    "elapsed_s": 1.0525382939958945,
+    "ok_http": true,
+    "text": "The dominant colors are red and blue. A blue square appears near the center.",
+    "raw": {
+      "id": "chatcmpl-9fa5a00d5186cc37",
+      "object": "chat.completion",
+      "created": 1782740668,
+      "model": "MiMo-V2.5-NVFP4",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "The dominant colors are red and blue. A blue square appears near the center.",
+            "refusal": null,
+            "annotations": null,
+            "audio": null,
+            "function_call": null,
+            "tool_calls": [],
+            "reasoning": null
+          },
+          "logprobs": null,
+          "finish_reason": "stop",
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": "vllm-0.21.1rc1.dev85+gd87ee1893.d20260518-tp2-95a66e77",
+      "usage": {
+        "prompt_tokens": 265,
+        "total_tokens": 282,
+        "completion_tokens": 17,
+        "prompt_tokens_details": null
+      },
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "prompt_text": null,
+      "kv_transfer_params": null
+    }
+  }
+]

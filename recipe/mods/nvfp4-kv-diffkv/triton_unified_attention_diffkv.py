@@ -513,7 +513,10 @@ def unified_attention_diffkv(
     # decode case (2.3x faster than this Triton path on long context). Gated by
     # VLLM_WMMA_DECODE=1; returns False (falls through) for SWA/sinks/softcap/prefill
     # /unsupported shapes, and any exception falls back to Triton below.
-    if nvfp4_packed and max_seqlen_q <= 3:   # decode + MTP (q_len<=num_spec+1); larger -> Triton prefill
+    import os as _oswmma
+    _wmma_qcap = max(1, int(_oswmma.environ.get("VLLM_WMMA_QLEN_CAP", "3")))
+
+    if nvfp4_packed and max_seqlen_q <= _wmma_qcap:   # decode + MTP; larger -> Triton prefill
         try:
             from vllm.v1.attention.ops.wmma_decode import try_wmma_decode
             if try_wmma_decode(q, k, out, seqused_k, block_table, softmax_scale,
@@ -652,7 +655,8 @@ def unified_attention_diffkv(
     # to the Triton result `out` (which is now filled). Logs rel-err to a file. Engine
     # output (out) is UNCHANGED — Triton stays authoritative during comparison.
     import os as _oscmp
-    if _oscmp.environ.get("VLLM_WMMA_COMPARE", "0") == "1" and nvfp4_packed and max_seqlen_q <= 3 \
+    _wmma_cmp_qcap = max(1, int(_oscmp.environ.get("VLLM_WMMA_QLEN_CAP", "3")))
+    if _oscmp.environ.get("VLLM_WMMA_COMPARE", "0") == "1" and nvfp4_packed and max_seqlen_q <= _wmma_cmp_qcap \
             and window_size[0] < 0 and sinks is None and (softcap == 0.0):
         try:
             from vllm.v1.attention.ops.wmma_decode import try_wmma_decode as _twd

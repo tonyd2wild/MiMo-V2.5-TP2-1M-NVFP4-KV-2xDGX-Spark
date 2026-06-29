@@ -226,10 +226,10 @@ def _compile():
     return _OK
 
 
-_QLEN_CAP = 3  # ONLY genuine decode + MTP (q_len = num_spec_tokens+1 = 3). This is a flash-DECODE
-               # kernel: it is INCORRECT for prefill (multiple new tokens attending to short context
-               # -> produced NaN). Prefill chunks (even small q_len) must go to Triton. We additionally
-               # require seqused > q_len (decode has prior context; first prefill chunk does not).
+# Default remains the validated MTP2 envelope (q_len = num_spec_tokens + 1 = 3).
+# Raising this is experimental: first run with VLLM_WMMA_DECODE=0 and
+# VLLM_WMMA_COMPARE=1 so Triton stays authoritative while WMMA logs rel-err.
+_QLEN_CAP = max(1, int(os.environ.get("VLLM_WMMA_QLEN_CAP", "3")))
 
 def try_wmma_decode(q, k_cache, out, seqused_k, block_table, softmax_scale,
                     num_kv_heads, head_size_qk, head_size_v, block_size, sinks, softcap,

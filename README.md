@@ -2,7 +2,7 @@
 
 > 🔀 This is the **2-Spark (TP=2)** build. Running **3 Sparks**? → [MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark](https://github.com/tonyd2wild/MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark)
 
-Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2.5-NVFP4) (Omni: text + image + video + audio) tensor-parallel across **two NVIDIA DGX Spark (GB10)** boxes, with **4-bit `nvfp4` KV cache** + MTP speculative decoding — serving a **1,000,000-token** context with a **~1.97M-token KV pool**.
+Running [`lukealonso/MiMo-V2.5-NVFP4`](https://huggingface.co/lukealonso/MiMo-V2.5-NVFP4) (Omni: text + image + video + audio) tensor-parallel across **two NVIDIA DGX Spark (GB10)** boxes, with **4-bit `nvfp4` KV cache** + MTP speculative decoding — serving a **1,000,000-token** context with a **2.17M-token KV pool**.
 
 This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark](https://github.com/tonyd2wild/MiMo-V2.5-TP3-NVFP4-KV-3xDGX-Spark)). Two Sparks instead of three — so it pairs cleanly with another 2-node model on the same fleet (e.g. DeepSeek-V4 TP=2 on the other pair).
 
@@ -19,12 +19,71 @@ This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDG
 | Parallelism | TP=2, PP=1 |
 | **Max context / request** | **1,000,000** (verified, benched) |
 | KV cache dtype | **`nvfp4`** (4-bit) |
-| GPU KV pool | **~1.97M tokens** |
+| GPU KV pool | **2,171,757 tokens** |
 | Speculative decoding | MTP, `num_speculative_tokens=1` |
 | Loader | `safetensors` |
 | GPU mem util | 0.84 |
-| `max_num_seqs` | 4 (tune — see below) |
-| Decode speed | **~28–30 tok/s** |
+| `max_num_seqs` | 8 in the latest concurrency checkpoint |
+| Single-stream decode speed | **~31.9–32.1 tok/s** |
+| C8 short-request aggregate | **184.1 tok/s** |
+
+Experimental speed-tuning notes, including MTP/scheduler dead ends and CUDA graph
+tradeoffs, are in [`benchmarks/speed-tuning-notes-20260629.md`](benchmarks/speed-tuning-notes-20260629.md).
+
+### Latest checkpoint: 1M + C8 + basic Omni
+
+Current best single-stream checkpoint:
+
+| Output tokens | server tok/s | acceptance |
+|---:|---:|---:|
+| 512 | 32.13 | 0.928 |
+| 1024 | 31.87 | 0.927 |
+| 2048 | 31.89 | 0.926 |
+
+Current C8 relaunch:
+
+```text
+MAX_MODEL_LEN=1000000
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+BLOCK_SIZE=64
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+```
+
+Boot log:
+
+```text
+GPU KV cache size: 2,171,757 tokens
+Maximum concurrency for 1,000,000 tokens per request: 2.17x
+```
+
+Static short-request concurrency:
+
+| concurrency | aggregate tok/s | aggregate-derived tok/s per stream | acceptance |
+|---:|---:|---:|---:|
+| 2 | 60.2 | 30.1 | 0.829 |
+| 4 | 94.7 | 23.7 | 0.837 |
+| 6 | 141.8 | 23.6 | 0.832 |
+| 8 | 184.1 | 23.0 | 0.867 |
+
+Important: C8 here means eight short or moderate-context requests on a
+1M-capable server. It does **not** mean eight simultaneous full-1M requests; the
+2.17M-token KV pool fits roughly two full-1M requests by memory.
+
+Basic Omni smoke validation passed through the live OpenAI-compatible API:
+
+| modality | result |
+|---|---|
+| Image | correctly identified red/blue and center circle |
+| Audio | correctly identified a generated sine tone as a simple tone |
+| Video | correctly identified red/blue and a blue center square |
+
+Checkpoint evidence:
+
+- [`benchmarks/mimo-v25-concurrency-c2-c8-checkpoint-20260629.md`](benchmarks/mimo-v25-concurrency-c2-c8-checkpoint-20260629.md)
+- [`benchmarks/mimo-v25-omni-validation-20260629.md`](benchmarks/mimo-v25-omni-validation-20260629.md)
+- [`benchmarks/mimo_omni_validation_results_20260629.json`](benchmarks/mimo_omni_validation_results_20260629.json)
 
 ### 69-scenario tool-eval (2Wild model-eval harness)
 
@@ -43,13 +102,13 @@ This is the **2-node** sibling of the 3-node build ([MiMo-V2.5-TP3-NVFP4-KV-3xDG
 
 ## Context + concurrency: how the shared KV pool works
 
-The **~1.97M-token KV pool is shared** across all in-flight requests. `max_model_len` caps any *single* request; `max_num_seqs` caps how many run at once; the pool is the real budget.
+The **2.17M-token KV pool is shared** across all in-flight requests. `max_model_len` caps any *single* request; `max_num_seqs` caps how many run at once; the pool is the real budget.
 
-- **One deep request → up to the full 1M tokens** (~1.97× — fits ~2 full 1M requests).
+- **One deep request → up to the full 1M tokens** (~2.17× — fits ~2 full 1M requests).
 - **Many moderate requests → high concurrency.** e.g. **4 agents × 100K = 400K** = ~20% of the pool → all 4 run in parallel with lots of headroom (~20 concurrent 100K agents before KV bites).
 - The only thing you can't do: **4 agents all at a full 1M simultaneously** (that'd need 4M) → vLLM just queues the overflow until room frees.
 
-**Tuning `max_num_seqs`:** set it to **2** if your workload is single huge (500K–1M) requests; set it to **4+** for multi-agent / many-moderate-context work (the config here ships `max_num_seqs=4`, `gpu-memory-utilization=0.84` so a full 1M request still fits alongside the extra seq slots).
+**Tuning `max_num_seqs`:** set it to **2** if your workload is single huge (500K–1M) requests; set it to **4+** for multi-agent / many-moderate-context work. The latest checkpoint boots with `max_num_seqs=8`, `gpu-memory-utilization=0.84`, and a 2.17M-token KV pool.
 
 ## The config that works
 
@@ -58,13 +117,18 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 ```bash
 --tensor-parallel-size 2 --pipeline-parallel-size 1 \
 --kv-cache-dtype nvfp4 --attention-backend triton_attn_diffkv \
---max-model-len 1000000 --max-num-seqs 4 \
+--max-model-len 1000000 --max-num-seqs 8 \
 --gpu-memory-utilization 0.84 \
 --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
 --load-format safetensors --enforce-eager \
 --hf-overrides '{"architectures":["MiMoV2OmniForCausalLM"]}' \
 --tool-call-parser mimo --reasoning-parser mimo
 ```
+
+`recipe/launch.sh` defaults to `TENSOR_PARALLEL_SIZE=2` and
+`PIPELINE_PARALLEL_SIZE=1`. Override those only for topology diagnostics, e.g.
+`TENSOR_PARALLEL_SIZE=1 PIPELINE_PARALLEL_SIZE=2`, then compare against the
+validated TP=2 result before publishing it as a serving config.
 
 ## Reproduce from scratch (start here)
 
@@ -106,10 +170,11 @@ bash recipe/apply-mods.sh vllm_mimo_tp2
 ### 4. Bring up Ray + vLLM (the runbook)
 ```bash
 # find your RoCE IP + HCA on each node first:  ibdev2netdev ; ip -4 addr show <iface>
-# HEAD container:    source recipe/env.sh && HEAD_ROCE_IP=<head>   bash recipe/run-head.sh
-# WORKER container:  source recipe/env.sh && HEAD_ROCE_IP=<head> WORKER_ROCE_IP=<worker> bash recipe/run-worker.sh
+# export NCCL_SOCKET_IFNAME/GLOO_SOCKET_IFNAME/NCCL_IB_HCA if they differ from the DGX Spark defaults in env.sh
+# HEAD container:    source recipe/env.sh && export HEAD_ROCE_IP=<head> && bash recipe/run-head.sh
+# WORKER container:  source recipe/env.sh && export HEAD_ROCE_IP=<head> WORKER_ROCE_IP=<worker> && bash recipe/run-worker.sh
 # HEAD: wait for 2 GPUs →  until ray status 2>/dev/null | grep -qE '2\.0/2\.0 GPU'; do sleep 2; done
-# HEAD: launch vLLM    →  source recipe/env.sh && bash recipe/launch.sh
+# HEAD: launch vLLM    →  source recipe/env.sh && export HEAD_ROCE_IP=<head> && bash recipe/launch.sh
 ```
 Containers come up worker-then-head; Ray comes up head-then-worker; vLLM launches only on the head once Ray sees 2 GPUs. `launch.sh` honors `env.sh`, so the 500K→1M fallback below works by just exporting the vars before step 4.
 
@@ -163,7 +228,7 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 ## Repro checklist
 
 1. Worker-first Ray; `safetensors`; Omni arch; `--kv-cache-dtype nvfp4` + `triton_attn_diffkv`; MTP1.
-2. `max_model_len=1000000`, `max_num_seqs=4`, `gpu-memory-utilization=0.84`.
+2. `max_model_len=1000000`, `max_num_seqs=8`, `gpu-memory-utilization=0.84`.
 3. Confirm the startup log shows a `GPU KV cache size` ≥ 1,000,000 tokens (1M fits).
 4. Smoke (`"Reply exactly: OK"`) → then run the 69-eval.
 
@@ -185,7 +250,11 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 └── benchmarks/
     ├── thinking-off-1M-69eval.{md,json}   # 97.8 quality @ 1M ctx
     ├── thinking-off-69eval.{md,json}      # 97.8 quality @ 500K ctx
-    └── thinking-on-69eval.{md,json}       # 90.6 quality (thinking on)
+    ├── thinking-on-69eval.{md,json}       # 90.6 quality (thinking on)
+    ├── speed-tuning-notes-20260629.md
+    ├── mimo-v25-concurrency-c2-c8-checkpoint-20260629.md
+    ├── mimo-v25-omni-validation-20260629.md
+    └── mimo_omni_validation_results_20260629.json
 ```
 
 The 6 patch **mods are vendored in [`recipe/mods/`](recipe/mods)** and applied at runtime via [`recipe/apply-mods.sh`](recipe/apply-mods.sh) (see [Runtime stack used](#runtime-stack-used) for what each does + licensing).
@@ -226,9 +295,9 @@ Licensing of the vendored files (each carries its own SPDX header):
 
 ## Claims we can / can't make
 
-**Safe:** boots on 2× DGX Spark at TP=2 / MTP1 / NVFP4 KV; serves `max_model_len=1000000` (verified + benched at 97.8 quality); ~1.97M-token KV pool; MTP1 > MTP2; safetensors is the stable loader; thinking-OFF beats thinking-ON for tool/agent tasks.
+**Safe:** boots on 2× DGX Spark at TP=2 / MTP1 / NVFP4 KV; serves `max_model_len=1000000` (verified + benched at 97.8 quality); 2.17M-token KV pool; C8 short-request concurrency reaches 184.1 tok/s aggregate; basic image/audio/video inputs pass through the live OpenAI-compatible API; MTP1 > MTP2; safetensors is the stable loader; thinking-OFF beats thinking-ON for tool/agent tasks.
 
-**Not yet:** not production-stable for many simultaneous *full-1M* agents (the pool holds ~2 full 1M requests); no audio/video quality claims without separate modality evals.
+**Not yet:** not production-stable for many simultaneous *full-1M* agents (the pool holds ~2 full 1M requests); no production-grade multimodal claims without a broader modality eval suite.
 
 ## Credits
 
@@ -259,4 +328,4 @@ Explicit so inspiration + upstream work are credited cleanly.
 
 MIT (covers this repo's recipe docs + config only — not the upstream mods). See [LICENSE](LICENSE).
 
-*Validated on 2× DGX Spark, 2026-06. 1M context boots + benches at 97.8 quality; pool holds ~2 full-1M requests (~1.97×), or ~20 concurrent 100K-context agents.*
+*Validated on 2× DGX Spark, 2026-06. 1M context boots + benches at 97.8 quality; pool holds ~2 full-1M requests (~2.17×), or ~20 concurrent 100K-context agents.*

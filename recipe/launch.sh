@@ -13,7 +13,21 @@ set -euo pipefail
 : "${GPU_MEMORY_UTILIZATION:=0.84}"
 : "${MTP_SPEC_TOKENS:=1}"
 : "${ENFORCE_EAGER:=1}"
+: "${TENSOR_PARALLEL_SIZE:=2}"
+: "${PIPELINE_PARALLEL_SIZE:=1}"
+: "${USE_LOCAL_ARGMAX_REDUCTION:=0}"
+: "${BLOCK_SIZE:=32}"
+: "${VLLM_HOST_IP:=${HEAD_ROCE_IP:-}}"
+if [ -z "${VLLM_HOST_IP:-}" ]; then
+  echo "ERROR: set VLLM_HOST_IP or HEAD_ROCE_IP to the head node RoCE/cluster IP" >&2
+  exit 2
+fi
+export VLLM_HOST_IP
 EAGER_FLAG=""; [ "${ENFORCE_EAGER}" = "1" ] && EAGER_FLAG="--enforce-eager"
+SPECULATIVE_CONFIG="{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPEC_TOKENS}}"
+if [ "${USE_LOCAL_ARGMAX_REDUCTION}" = "1" ]; then
+  SPECULATIVE_CONFIG="{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPEC_TOKENS},\"use_local_argmax_reduction\":true}"
+fi
 
 # OOM fallback: prove 500K first, then climb — export before running this script, e.g.
 #   MAX_MODEL_LEN=500000 MAX_NUM_SEQS=2 GPU_MEMORY_UTILIZATION=0.82 bash launch.sh
@@ -22,8 +36,8 @@ vllm serve "${MODEL_PATH}" \
   --served-model-name "${SERVED_MODEL_NAME}" \
   --trust-remote-code \
   --dtype auto \
-  --tensor-parallel-size 2 \
-  --pipeline-parallel-size 1 \
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+  --pipeline-parallel-size "${PIPELINE_PARALLEL_SIZE}" \
   --distributed-executor-backend ray \
   --load-format "${LOAD_FORMAT}" \
   --hf-overrides '{"architectures":["MiMoV2OmniForCausalLM"]}' \
@@ -35,7 +49,7 @@ vllm serve "${MODEL_PATH}" \
   --max-model-len "${MAX_MODEL_LEN}" \
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" \
   --max-num-seqs "${MAX_NUM_SEQS}" \
-  --block-size 32 \
+  --block-size "${BLOCK_SIZE}" \
   --enable-prefix-caching \
   --enable-chunked-prefill \
   --no-async-scheduling \
@@ -43,7 +57,7 @@ vllm serve "${MODEL_PATH}" \
   --tool-call-parser mimo \
   --reasoning-parser mimo \
   --default-chat-template-kwargs '{"enable_thinking":false}' \
-  --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPEC_TOKENS}}" \
+  --speculative-config "${SPECULATIVE_CONFIG}" \
   ${EAGER_FLAG} \
   --host 0.0.0.0 \
   --port 8000

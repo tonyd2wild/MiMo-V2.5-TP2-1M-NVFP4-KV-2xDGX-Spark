@@ -5,8 +5,14 @@
 # then run this — the worker joins the head's address.
 set -euo pipefail
 : "${RAY_PORT:=6379}"
-: "${HEAD_ROCE_IP:?set HEAD_ROCE_IP (the head node's RoCE/cluster IP)}"
-: "${WORKER_ROCE_IP:?set WORKER_ROCE_IP (this node's RoCE/cluster IP)}"
+if [ -z "${HEAD_ROCE_IP:-}" ]; then
+  echo "ERROR: set HEAD_ROCE_IP to the head node RoCE/cluster IP" >&2
+  exit 2
+fi
+if [ -z "${WORKER_ROCE_IP:-}" ]; then
+  echo "ERROR: set WORKER_ROCE_IP to this node RoCE/cluster IP" >&2
+  exit 2
+fi
 
 # Pin the host IP so Ray/vLLM don't bind a link-local 169.254.x.x interface (a known OOM/crash cause).
 export VLLM_HOST_IP="${WORKER_ROCE_IP}"
