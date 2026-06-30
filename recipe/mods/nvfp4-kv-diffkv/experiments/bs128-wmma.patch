@@ -1,0 +1,39 @@
+diff --git a/recipe/mods/nvfp4-kv-diffkv/wmma_decode.py b/recipe/mods/nvfp4-kv-diffkv/wmma_decode.py
+index eb261ef..d8b8d37 100644
+--- a/recipe/mods/nvfp4-kv-diffkv/wmma_decode.py
++++ b/recipe/mods/nvfp4-kv-diffkv/wmma_decode.py
+@@ -91,7 +91,7 @@ __global__ void wmma_dec_b(const __nv_bfloat16* __restrict__ q,
+     for(int i=lane;i<G*Hv;i+=32){ int r=i/Hv,d=i%Hv; size_t idx=(size_t)((hb+kh*G+r)*NSPLIT+sp); pa[idx*Hv+d]=0.f; }
+     return; }
+   int per=((L+NSPLIT-1)/NSPLIT + NT-1)/NT*NT; int j0=sp*per; int j1=min(L,j0+per);
+-  const int BSL=(BS==32)?5:(BS==16)?4:6;
++  const int BSL=(BS==16)?4:(BS==32)?5:(BS==64)?6:7;
+   for(int jt=j0; jt<j1; jt+=NT){
+     int nv=min(NT,j1-jt);
+     const int KW=Hk/8;
+@@ -195,9 +195,12 @@ void run(torch::Tensor q,torch::Tensor cache,torch::Tensor bt,torch::Tensor sequ
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+   static bool once=false;
+   if(!once){ cudaFuncSetAttribute((const void*)&wmma_dec_b<192,128,16,32,180>, cudaFuncAttributePreferredSharedMemoryCarveout,100);
+-             cudaFuncSetAttribute((const void*)&wmma_dec_b<192,128,16,64,180>, cudaFuncAttributePreferredSharedMemoryCarveout,100); once=true; }
++             cudaFuncSetAttribute((const void*)&wmma_dec_b<192,128,16,64,180>, cudaFuncAttributePreferredSharedMemoryCarveout,100);
++             cudaFuncSetAttribute((const void*)&wmma_dec_b<192,128,16,128,180>, cudaFuncAttributePreferredSharedMemoryCarveout,100); once=true; }
+   auto qp=(const __nv_bfloat16*)q.data_ptr(); auto cp=cache.data_ptr<unsigned char>(); auto bp=bt.data_ptr<int>(); auto sp=seqused.data_ptr<int>();
+-  if(BS==64)
++  if(BS==128)
++    wmma_dec_b<192,128,16,128,180><<<g,32,0,stream>>>(qp,cp,bp,sp,pm_p,pl_p,pa_p,NQH,NKVH,NSPLIT,maxblk,nblk,scale);
++  else if(BS==64)
+     wmma_dec_b<192,128,16,64,180><<<g,32,0,stream>>>(qp,cp,bp,sp,pm_p,pl_p,pa_p,NQH,NKVH,NSPLIT,maxblk,nblk,scale);
+   else
+     wmma_dec_b<192,128,16,32,180><<<g,32,0,stream>>>(qp,cp,bp,sp,pm_p,pl_p,pa_p,NQH,NKVH,NSPLIT,maxblk,nblk,scale);
+@@ -256,8 +259,8 @@ def try_wmma_decode(q, k_cache, out, seqused_k, block_table, softmax_scale,
+                 pass
+     if not force and os.environ.get("VLLM_WMMA_DECODE", "1") == "0":   # default ON; only explicit "0" disables
+         return False
+-    if (head_size_qk != _HK or head_size_v != _HV or block_size not in (32, 64)
+-            or k_cache.shape[-1] != _SB or q.shape[1] != num_kv_heads * _G):  # G=16 invariant; full-attn uses BS=64, SWA BS=32
++    if (head_size_qk != _HK or head_size_v != _HV or block_size not in (32, 64, 128)
++            or k_cache.shape[-1] != _SB or q.shape[1] != num_kv_heads * _G):  # G=16 invariant; full-attn may use BS=128, SWA uses smaller blocks.
+         _dbg("shape"); return False
+     if sinks is not None or softcap not in (0.0, None) or window_left >= 0:
+         _dbg("feature(sink/softcap/window)"); return False
