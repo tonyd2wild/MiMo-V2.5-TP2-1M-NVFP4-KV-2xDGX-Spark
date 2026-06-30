@@ -60,6 +60,45 @@ extra split overhead appears to outweigh the benefit for observed MiMo C1 decode
 traffic. Future speed work should look beyond "enable BS128 full-attention WMMA"
 alone.
 
+### 2026-06-30 sliding-window/sink reference harness
+
+The other repeated live WMMA reject is the sliding-window/sink path:
+
+```text
+REJECT=shape q=(2, 32, 192) kvh=4 hqk=192 hv=128 bs=64
+mq=2 win=127 sinks=True softcap=0 dt=torch.bfloat16 cu=True
+```
+
+This path is materially different from BS128 full attention:
+
+- `kvh=4`, so the query/KV group is `32 / 4 = 8`, not the current WMMA kernel's
+  full-attention `G=16`.
+- `win=127` becomes an effective sliding window of `128` in the Triton launcher.
+- `sinks=True` seeds the online softmax with a per-query-head virtual sink
+  score. The sink contributes to the denominator but has zero value
+  contribution.
+
+An offline harness was added at:
+
+```text
+recipe/mods/nvfp4-kv-diffkv/experiments/swa_sink_reference_harness.py
+```
+
+Live Bluey container check:
+
+```text
+shape=[2, 32, 192], kv_heads=4, group=8, block_size=64,
+seq_len=180, window_left=127, sliding_window=128, sinks=True,
+max_abs=0.015810489654541016, mean_abs=0.0017646412597969174,
+max_rel=0.9150206446647644, mean_rel=0.0036237784661352634,
+ok=True
+```
+
+Conclusion: the current Triton sink/window path is now verified against a
+PyTorch reference for the exact live reject shape. Any future faster kernel for
+this path should target `G=8`, `bs=64`, `window_left=127`, and sink-softmax
+semantics, then pass this harness before serving tests.
+
 ### 2026-06-30 restored 65K no-loop baseline check
 
 After rolling back the live BS128 patch, Bluey/Reddie was restored to the stable

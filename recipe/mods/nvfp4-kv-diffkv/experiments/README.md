@@ -12,11 +12,10 @@ custom WMMA path:
 REJECT=shape q=(2, 32, 192) kvh=2 hqk=192 hv=128 bs=128 ... win=-1 sinks=False
 ```
 
-Status: not production-ready. A live compare-mode attempt with
-`VLLM_WMMA_DECODE=0` and `VLLM_WMMA_COMPARE=1` stalled after the second model
-load before KV/profile and produced no compare log. Do not enable this patch in
-serving until it compiles and passes relative-error comparison in an isolated
-harness.
+Status: not production-ready. The isolated BS128 harness passed, and a later
+live authoritative test activated the BS128 WMMA kernel with clean output, but
+C1 throughput regressed to the 21-25 tok/s range. Keep this patch as an
+investigation artifact only; do not enable it in serving by default.
 
 Required gate before promotion:
 
@@ -56,3 +55,49 @@ shape=[2, 32, 192], block_size=128, seq_len=180,
 max_abs=0.015426158905029297, mean_abs=0.0015948378713801503,
 calls=1, ok=True
 ```
+
+Live serving follow-up, 2026-06-30:
+
+```text
+KERNEL_ACTIVE total_q=2 kvh=2 NSPLIT=512
+1024-token request: 21.14 tok/s, clean output
+warmed 512-token request: 24.70 tok/s, clean output
+```
+
+Conclusion: correctness alone was not enough. The BS128 full-attention path
+adds overhead in the observed serving shape and should stay off unless a future
+kernel redesign changes the speed result.
+
+## swa_sink_reference_harness.py
+
+Offline correctness harness for the other repeated live MiMo MTP1 reject:
+
+```text
+q=(2, 32, 192), kvh=4, bs=64, mq=2, win=127, sinks=True
+```
+
+This is the sliding-window/sink path. It differs from the full-attention BS128
+shape in two important ways:
+
+- `kvh=4`, so the query/KV group is `32 / 4 = 8`, not the WMMA kernel's current
+  full-attention `G=16`.
+- `sinks=True` seeds the online softmax with a per-query-head virtual sink
+  score. The sink contributes to the denominator but has zero value
+  contribution.
+
+The script runs the installed Triton DiffKV implementation against a PyTorch
+reference that includes the sink denominator and `window_left + 1` sliding
+window semantics. It does not modify the running vLLM install.
+
+Live Bluey container check, 2026-06-30:
+
+```text
+shape=[2, 32, 192], kv_heads=4, group=8, block_size=64,
+seq_len=180, window_left=127, sliding_window=128, sinks=True,
+max_abs=0.015810489654541016, mean_abs=0.0017646412597969174,
+ok=True
+```
+
+Conclusion: the current Triton path is a verified reference for the rejected
+sinks/window shape. Any faster kernel for this path should pass this harness
+before being tested in serving.
