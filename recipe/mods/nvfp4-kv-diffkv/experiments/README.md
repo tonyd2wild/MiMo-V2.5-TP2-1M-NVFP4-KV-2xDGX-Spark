@@ -101,3 +101,31 @@ ok=True
 Conclusion: the current Triton path is a verified reference for the rejected
 sinks/window shape. Any faster kernel for this path should pass this harness
 before being tested in serving.
+
+## swa_sink_wmma_harness.py
+
+Standalone WMMA prototype for the same sliding-window/sink shape:
+
+```text
+q=(2, 32, 192), kvh=4, group=8, bs=64, sliding_window=128, sinks=True
+```
+
+This harness does not patch vLLM. It compiles a separate CUDA extension with a
+`G=8` WMMA kernel, includes sink-softmax semantics, applies the sliding-window
+lower bound, and compares directly against a PyTorch reference.
+
+Live Bluey container check, 2026-06-30:
+
+```text
+shape=[2, 32, 192], kv_heads=4, group=8, block_size=64,
+seq_len=180, sliding_window=128, sinks=True, nsplit=8,
+max_abs=0.015726089477539062, mean_abs=0.001700876047834754,
+max_rel=0.6331995129585266, mean_rel=0.002963173436000943,
+ok=True
+```
+
+Conclusion: the missing SWA/sink WMMA shape is feasible offline. This is still
+not a serving patch: it uses a standalone extension and `NSPLIT=8`. The next
+safe promotion step is a non-authoritative in-engine compare path where Triton
+continues to serve output while this kernel logs relative error and timing for
+live MiMo requests.

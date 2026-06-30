@@ -99,6 +99,36 @@ PyTorch reference for the exact live reject shape. Any future faster kernel for
 this path should target `G=8`, `bs=64`, `window_left=127`, and sink-softmax
 semantics, then pass this harness before serving tests.
 
+### 2026-06-30 offline SWA/sink WMMA prototype
+
+A standalone WMMA prototype harness was added for the same sink/window shape:
+
+```text
+recipe/mods/nvfp4-kv-diffkv/experiments/swa_sink_wmma_harness.py
+```
+
+Unlike the current production WMMA kernel, this prototype targets:
+
+```text
+G=8, kvh=4, bs=64, sliding_window=128, sinks=True
+```
+
+Live Bluey container check:
+
+```text
+shape=[2, 32, 192], kv_heads=4, group=8, block_size=64,
+seq_len=180, sliding_window=128, sinks=True, nsplit=8,
+max_abs=0.015726089477539062, mean_abs=0.001700876047834754,
+max_rel=0.6331995129585266, mean_rel=0.002963173436000943,
+ok=True
+```
+
+Conclusion: the missing sliding-window/sink WMMA shape is feasible offline. This
+does not prove a serving speedup yet because the harness uses a standalone
+extension and `NSPLIT=8`. The next safe step is to integrate it behind a
+non-authoritative compare gate so Triton remains the served output while the
+prototype logs correctness and timing on live requests.
+
 ### 2026-06-30 restored 65K no-loop baseline check
 
 After rolling back the live BS128 patch, Bluey/Reddie was restored to the stable
@@ -1053,9 +1083,10 @@ or enable it until it compiles and compares in an isolated harness first.
 1. Treat BS128 WMMA as an experimental harness only. The offline harness passed,
    and a live authoritative patch activated cleanly, but C1 regressed to
    21-25 tok/s. Do not enable it by default.
-2. Investigate the still-rejected sliding-window/sink attention path:
-   `q=(2,32,192)`, `kvh=4`, `bs=64`, `win=127`, `sinks=True`. This path remains
-   Triton-only and appears on every MiMo MTP1 request.
+2. Promote the offline SWA/sink WMMA prototype only into a non-authoritative
+   compare path first. The offline harness passed for `G=8`, `kvh=4`, `bs=64`,
+   `sliding_window=128`, `sinks=True`, but serving timing/correctness are still
+   unproven.
 3. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
    large for this tuning pass. PP=2/TP=1 currently fails before model load.
 4. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
