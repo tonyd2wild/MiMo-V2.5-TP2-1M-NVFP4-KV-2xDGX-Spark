@@ -679,12 +679,51 @@ Conclusion: graph capture is not a path to 45-55 tok/s here. At 1M it fails the
 KV budget, and at 200K it boots but performs roughly like eager MTP3/q_len=4 with
 poor short-run acceptance.
 
+### 65K MTP1 `VLLM_WMMA_NSPLIT=256`
+
+65K config, matching the stable smoke profile:
+
+```bash
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+BLOCK_SIZE=64
+GPU_MEMORY_UTILIZATION=0.84
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+ENFORCE_EAGER=1
+VLLM_WMMA_NSPLIT=256
+```
+
+Startup evidence:
+
+- Model served successfully at `max_model_len=65536`.
+- KV profile reported 38.98x maximum concurrency for a 65,536-token request on
+  this launch.
+- Trace still showed WMMA rejects for the MTP-shaped `q=(2, 32, 192)` decode
+  calls, so this did not improve the critical MTP1 path.
+
+Client-side direct endpoint benchmark (`MAX_TOKENS=160`):
+
+| concurrency | default NSPLIT 512 agg tok/s | NSPLIT 256 agg tok/s | bad outputs |
+|---:|---:|---:|---:|
+| 1 | 25.71 | 14.21 | 0 |
+| 2 | 39.92 | 30.97 | 0 |
+| 4 | 63.87 | 53.06 | 0 |
+| 6 | 82.73 | 70.08 | 0 |
+
+Conclusion: `VLLM_WMMA_NSPLIT=256` is stable but slower than the default 512
+split on the 65K MTP1 profile. Do not use it as the serving default. The live
+Reddie/Bluey endpoint was restored to the default 512 split after this test and
+smoked with `OK RESTORED 512`.
+
 ## Next useful experiments
 
 1. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
    large for this tuning pass.
-2. Sweep `VLLM_WMMA_NSPLIT=64,128,256,512` at representative context lengths.
-3. If the NSPLIT sweep is also flat, the next real code path is a
+2. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
+   is using WMMA; 256 was already worse than the 512 default at 65K.
+3. If WMMA coverage stays mixed, the next real code path is a
    MiMo-MTP-aware proposer wrapper or metadata-cache path inside vLLM's existing
    `method:"mtp"` flow.
 
