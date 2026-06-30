@@ -717,13 +717,69 @@ split on the 65K MTP1 profile. Do not use it as the serving default. The live
 Reddie/Bluey endpoint was restored to the default 512 split after this test and
 smoked with `OK RESTORED 512`.
 
+### 65K live C1 fixed-token check
+
+After rejecting the NSPLIT=256 run and restoring the stable 65K profile, a
+fixed-token C1 request was run against the live Bluey/Reddie endpoint:
+
+```json
+{
+  "max_tokens": 1024,
+  "temperature": 0,
+  "repetition_penalty": 1.08,
+  "ignore_eos": true
+}
+```
+
+Result:
+
+| profile | max tokens | completion tokens | client tok/s | finish |
+|---|---:|---:|---:|---|
+| 65K live, `MAX_NUM_SEQS=8` | 1024 | 1024 | 27.88 | length |
+
+The endpoint remained stable and clean, but this is not a C1 speed win. The
+current better recorded C1 checkpoint is still the block-size-64 / greedy-fast
+1M profile at about 31.87-31.89 tok/s.
+
+### BS128 WMMA full-attention investigation
+
+The WMMA trace explains one real missed speed path on the current MiMo export:
+
+```text
+REJECT=shape q=(2, 32, 192) kvh=2 hqk=192 hv=128 bs=128 ... win=-1 sinks=False
+```
+
+That call is the full-attention MTP-shaped path. It matches the kernel's
+per-rank head grouping (`32 q heads / 2 kv heads = G=16`) but not the current
+kernel's accepted block sizes (`32` and `64` only).
+
+A local/live compare attempt added a BS128 template dispatch and the required
+`log2(128)=7` block-table shift, then launched with:
+
+```bash
+VLLM_WMMA_DECODE=0
+VLLM_WMMA_COMPARE=1
+VLLM_WMMA_QLEN_CAP=3
+```
+
+This was intentionally non-authoritative: Triton would have remained the served
+output while WMMA wrote to a temp buffer for relative-error logging. The attempt
+did not reach KV/profile or `Application startup complete`; it stalled after the
+second model load before any compare log was produced. The live endpoint was
+restored to the original kernel file and stable 65K launch.
+
+Conclusion: BS128 WMMA is a valid lead, but not a serving patch yet. Do not land
+or enable it until it compiles and compares in an isolated harness first.
+
 ## Next useful experiments
 
-1. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
+1. Build an offline BS128 WMMA correctness/compile harness so the template can be
+   tested without taking the live endpoint down.
+2. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
    large for this tuning pass.
-2. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
+3. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
    is using WMMA; 256 was already worse than the 512 default at 65K.
-3. If WMMA coverage stays mixed, the next real code path is a
+4. If WMMA coverage stays mixed, the next real code path is a
    MiMo-MTP-aware proposer wrapper or metadata-cache path inside vLLM's existing
    `method:"mtp"` flow.
 
