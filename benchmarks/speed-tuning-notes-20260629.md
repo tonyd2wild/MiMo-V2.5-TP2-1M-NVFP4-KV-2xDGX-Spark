@@ -123,11 +123,25 @@ max_rel=0.6331995129585266, mean_rel=0.002963173436000943,
 ok=True
 ```
 
-Conclusion: the missing sliding-window/sink WMMA shape is feasible offline. This
-does not prove a serving speedup yet because the harness uses a standalone
-extension and `NSPLIT=8`. The next safe step is to integrate it behind a
-non-authoritative compare gate so Triton remains the served output while the
-prototype logs correctness and timing on live requests.
+Initial conclusion: the missing sliding-window/sink WMMA shape is feasible
+offline. This did not prove a serving speedup because the harness used a
+standalone extension and `NSPLIT=8`; timing was needed before any live compare
+promotion.
+
+Follow-up timing showed this prototype should not be promoted yet:
+
+| seq_len | Triton ms | WMMA ms | result |
+|---:|---:|---:|---|
+| 180 | 0.0369 | 0.0489 | WMMA 1.32x slower |
+| 512 | 0.0375 | 0.0999 | WMMA 2.67x slower |
+| 2048 | 0.0373 | 0.1130 | WMMA 3.02x slower |
+| 8192 | 0.0374 | 0.1135 | WMMA 3.04x slower |
+| 32768 | 0.0376 | 0.1165 | WMMA 3.10x slower |
+
+Revised conclusion: the SWA/sink path is probably not the C1 bottleneck. The
+existing Triton kernel is already flat with context length because the sliding
+window only covers the last 128 keys. Keep the harness as a correctness artifact,
+but do not spend a live compare cycle on this naive WMMA design.
 
 ### 2026-06-30 restored 65K no-loop baseline check
 
@@ -1083,10 +1097,9 @@ or enable it until it compiles and compares in an isolated harness first.
 1. Treat BS128 WMMA as an experimental harness only. The offline harness passed,
    and a live authoritative patch activated cleanly, but C1 regressed to
    21-25 tok/s. Do not enable it by default.
-2. Promote the offline SWA/sink WMMA prototype only into a non-authoritative
-   compare path first. The offline harness passed for `G=8`, `kvh=4`, `bs=64`,
-   `sliding_window=128`, `sinks=True`, but serving timing/correctness are still
-   unproven.
+2. Do not promote the naive SWA/sink WMMA prototype to live compare. It is
+   correct offline but slower than Triton by 1.3-3.1x across tested context
+   lengths because SWA only covers 128 keys.
 3. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
    large for this tuning pass. PP=2/TP=1 currently fails before model load.
 4. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path

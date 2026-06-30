@@ -124,8 +124,18 @@ max_rel=0.6331995129585266, mean_rel=0.002963173436000943,
 ok=True
 ```
 
-Conclusion: the missing SWA/sink WMMA shape is feasible offline. This is still
-not a serving patch: it uses a standalone extension and `NSPLIT=8`. The next
-safe promotion step is a non-authoritative in-engine compare path where Triton
-continues to serve output while this kernel logs relative error and timing for
-live MiMo requests.
+Offline timing, Bluey container, 2026-06-30:
+
+| seq_len | Triton ms | WMMA ms | WMMA / Triton |
+|---:|---:|---:|---:|
+| 180 | 0.0369 | 0.0489 | 1.32x slower |
+| 512 | 0.0375 | 0.0999 | 2.67x slower |
+| 2048 | 0.0373 | 0.1130 | 3.02x slower |
+| 8192 | 0.0374 | 0.1135 | 3.04x slower |
+| 32768 | 0.0376 | 0.1165 | 3.10x slower |
+
+Conclusion: the missing SWA/sink WMMA shape is feasible offline but is not a
+speed candidate in its current form. Because the sliding window only covers the
+last 128 keys, the existing Triton DiffKV kernel is already very fast and flat
+with context length. Do not promote this prototype to live serving unless the
+kernel design changes materially.

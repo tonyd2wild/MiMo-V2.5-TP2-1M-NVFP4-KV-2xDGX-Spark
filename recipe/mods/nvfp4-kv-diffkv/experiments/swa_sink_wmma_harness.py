@@ -17,6 +17,9 @@ import argparse
 import math
 
 import torch
+from vllm.v1.attention.ops.triton_unified_attention_diffkv import (
+    unified_attention_diffkv,
+)
 
 E2M1 = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
@@ -382,6 +385,20 @@ def reference_swa_sink(
     return out
 
 
+def cuda_time_ms(fn, *, warmup: int, iters: int) -> float:
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        fn()
+    end.record()
+    torch.cuda.synchronize()
+    return float(start.elapsed_time(end) / iters)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seq-len", type=int, default=180)
@@ -393,6 +410,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260630)
     parser.add_argument("--rtol", type=float, default=8e-2)
     parser.add_argument("--atol", type=float, default=8e-2)
+    parser.add_argument("--bench-iters", type=int, default=0)
+    parser.add_argument("--bench-warmup", type=int, default=5)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -423,6 +442,8 @@ def main() -> int:
     sinks = torch.randn((n_q_heads,), device=device, dtype=torch.float32) * 0.1
     out = torch.empty((args.q_len, n_q_heads, 128), device=device, dtype=torch.bfloat16)
     scale = 1.0 / math.sqrt(192)
+    cu = torch.tensor([0, args.q_len], device=device, dtype=torch.int32)
+    seqused_one = torch.tensor([args.seq_len], device=device, dtype=torch.int32)
 
     module.run(
         q.contiguous(),
@@ -458,6 +479,66 @@ def main() -> int:
         "mean_rel": float(rel_err.mean().item()),
         "ok": bool(torch.allclose(got, ref, rtol=args.rtol, atol=args.atol)),
     }
+    if args.bench_iters > 0:
+        out_wmma = torch.empty_like(out)
+        out_triton = torch.empty_like(out)
+        lut = E2M1.to(device)
+
+        def run_wmma() -> None:
+            module.run(
+                q.contiguous(),
+                cache.contiguous(),
+                block_table,
+                full_seq_lens.contiguous(),
+                sinks.contiguous(),
+                out_wmma.view(args.q_len * n_q_heads, 128),
+                int(args.nsplit),
+                int(args.sliding_window),
+                float(scale),
+            )
+
+        def run_triton() -> None:
+            unified_attention_diffkv(
+                q=q,
+                k=cache,
+                v=cache,
+                out=out_triton,
+                cu_seqlens_q=cu,
+                seqused_k=seqused_one,
+                softmax_scale=scale,
+                causal=True,
+                window_size=(args.sliding_window - 1, -1),
+                block_table=block_table_one,
+                softcap=0.0,
+                max_seqlen_q=args.q_len,
+                sinks=sinks,
+                nvfp4_packed=True,
+                scale_cache=cache.view(torch.float8_e4m3fn),
+                e2m1_lut=lut,
+                head_size_v_override=128,
+            )
+
+        triton_ms = cuda_time_ms(
+            run_triton,
+            warmup=args.bench_warmup,
+            iters=args.bench_iters,
+        )
+        wmma_ms = cuda_time_ms(
+            run_wmma,
+            warmup=args.bench_warmup,
+            iters=args.bench_iters,
+        )
+        torch.cuda.synchronize()
+        diff = (out_wmma.float() - out_triton.float()).abs()
+        stats["bench"] = {
+            "iters": args.bench_iters,
+            "warmup": args.bench_warmup,
+            "triton_ms": triton_ms,
+            "wmma_ms": wmma_ms,
+            "speedup_vs_triton": triton_ms / wmma_ms if wmma_ms else None,
+            "wmma_vs_triton_max_abs": float(diff.max().item()),
+            "wmma_vs_triton_mean_abs": float(diff.mean().item()),
+        }
     print(stats)
     if not stats["ok"]:
         raise SystemExit(1)
