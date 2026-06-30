@@ -108,6 +108,65 @@ observed MiMo MTP1 decode calls." The closest MiMo-native speed lead remains
 the dormant BS128 WMMA experiment, but it must pass compare-mode correctness in
 an isolated harness before it is safe for serving.
 
+### DSpark-comparable 200K/C16 lane
+
+DeepSeek DSpark's strongest public concurrency lane uses shorter context and
+higher `max_num_seqs` than MiMo's 1M/C8 recipe. To test whether MiMo benefits
+from the same serving shape, Bluey/Reddie was relaunched as:
+
+```bash
+MAX_MODEL_LEN=200000
+MAX_NUM_SEQS=16
+MAX_NUM_BATCHED_TOKENS=8192
+GPU_MEMORY_UTILIZATION=0.84
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+VLLM_WMMA_DECODE=1
+ENFORCE_EAGER=1
+```
+
+Boot evidence:
+
+```text
+/v1/models: MiMo-V2.5-NVFP4, max_model_len=200000
+GPU KV cache size: 1,642,200 tokens
+Maximum concurrency for 200,000 tokens per request: 8.21x
+Smoke response: OK 200K C16
+```
+
+Direct deterministic sweep (`MAX_TOKENS=256`, checks for CJK
+drift/repetition/tool/XML leakage):
+
+| concurrency | success | client aggregate tok/s | per-request mean tok/s | bad outputs | best server window |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1/1 | 22.91 | 22.92 | 0 | 20.3 |
+| 4 | 4/4 | 52.38 | 13.25 | 0 | 54.4 |
+| 8 | 8/8 | 79.02 | 10.10 | 0 | 96.2 |
+| 16 | 16/16 | 106.13 | 6.79 | 0 | 149.4 |
+
+At C16 the server briefly showed `Running: 11 reqs, Waiting: 5 reqs`, then
+settled into `Running: 16 reqs, Waiting: 0 reqs`. Acceptance stayed around
+0.65-0.74 during the sweep.
+
+WMMA trace still showed no active custom decode kernel:
+
+```text
+REJECT=shape q=(2, 32, 192) kvh=2 ... bs=128 mq=2 win=-1 sinks=False
+REJECT=shape q=(2, 32, 192) kvh=4 ... bs=64  mq=2 win=127 sinks=True
+```
+
+Conclusion: the DSpark-style `200K/C16` shape is clean and bootable for MiMo,
+but it is not a convincing speed win. It does not approach DeepSeek DSpark's C16
+aggregate and it still hits the same WMMA rejection pattern. After this test the
+live endpoint was restored to the safer 65K/C8 profile:
+
+```text
+/v1/models: max_model_len=65536
+GPU KV cache size: 2,528,716 tokens
+Maximum concurrency for 65,536 tokens per request: 38.59x
+Smoke response: OK RESTORED 65K
+```
+
 ### Eager baseline
 
 Long single-stream runs:

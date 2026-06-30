@@ -229,11 +229,13 @@ The transfer is:
 - capture logs/metrics before changing agent configs
 - improve MiMo's MTP proposer/metadata/target-token path as the DSpark analogue
 
-Concrete DSpark-inspired next test for MiMo is a separate 200K/C16 lane
-(`MAX_MODEL_LEN=200000`, `MAX_NUM_SEQS=16`, larger batched-token budget) to
-compare against DeepSeek's high-concurrency shape. Do not confuse that with
-porting DeepSeek's `method:"dspark"` proposer directly; that code depends on
-DeepSeek-specific kernels/configuration.
+Concrete DSpark-inspired test result: a separate 200K/C16 lane
+(`MAX_MODEL_LEN=200000`, `MAX_NUM_SEQS=16`, `MAX_NUM_BATCHED_TOKENS=8192`) booted
+and generated cleanly, but it was not a convincing speed win: C16 reached
+`106.13 tok/s` client aggregate and a best `149.4 tok/s` server log window, with
+the same WMMA rejection pattern. Do not confuse this with porting DeepSeek's
+`method:"dspark"` proposer directly; that code depends on DeepSeek-specific
+kernels/configuration. See the speed notes for the full table.
 
 Bluey/Reddie-specific bring-up notes are in
 [`BLUEY_REDDIE_DEPLOYMENT.md`](BLUEY_REDDIE_DEPLOYMENT.md).
