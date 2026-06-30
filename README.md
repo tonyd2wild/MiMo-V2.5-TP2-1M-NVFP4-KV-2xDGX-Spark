@@ -120,6 +120,7 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 --max-model-len 1000000 --max-num-seqs 8 \
 --gpu-memory-utilization 0.84 \
 --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
+--override-generation-config '{"temperature":0,"top_p":0.95,"repetition_penalty":1.08}' \
 --load-format safetensors --enforce-eager \
 --hf-overrides '{"architectures":["MiMoV2OmniForCausalLM"]}' \
 --tool-call-parser mimo --reasoning-parser mimo
@@ -129,6 +130,24 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 `PIPELINE_PARALLEL_SIZE=1`. Override those only for topology diagnostics, e.g.
 `TENSOR_PARALLEL_SIZE=1 PIPELINE_PARALLEL_SIZE=2`, then compare against the
 validated TP=2 result before publishing it as a serving config.
+
+### Stable sampling defaults for NVFP4
+
+Xiaomi's local deployment note recommends `temperature=1.0, top_p=0.95`.
+That may work for basic `"hi"` prompts, but on this NVFP4 weights + NVFP4 KV
+serving stack it can drift into Chinese or repeat loops on longer generations,
+especially when a raw OpenAI-compatible client does not send its own sampling
+parameters.
+
+The recipe therefore sets a conservative server-side default:
+
+```bash
+--override-generation-config '{"temperature":0,"top_p":0.95,"repetition_penalty":1.08}'
+```
+
+Hermes/OpenClaw should still set sampling per agent/request, but keeping this
+override in the vLLM launch protects direct `/v1/chat/completions` callers and
+avoids inheriting the model repo's high-temperature generation defaults.
 
 ## Reproduce from scratch (start here)
 

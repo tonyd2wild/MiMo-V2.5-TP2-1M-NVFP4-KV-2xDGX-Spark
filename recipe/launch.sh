@@ -13,6 +13,9 @@ set -euo pipefail
 : "${GPU_MEMORY_UTILIZATION:=0.84}"
 : "${MTP_SPEC_TOKENS:=1}"
 : "${ENFORCE_EAGER:=1}"
+: "${DEFAULT_TEMPERATURE:=0}"
+: "${DEFAULT_TOP_P:=0.95}"
+: "${REPETITION_PENALTY:=1.08}"
 : "${TENSOR_PARALLEL_SIZE:=2}"
 : "${PIPELINE_PARALLEL_SIZE:=1}"
 : "${USE_LOCAL_ARGMAX_REDUCTION:=0}"
@@ -28,6 +31,7 @@ SPECULATIVE_CONFIG="{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPEC_TO
 if [ "${USE_LOCAL_ARGMAX_REDUCTION}" = "1" ]; then
   SPECULATIVE_CONFIG="{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPEC_TOKENS},\"use_local_argmax_reduction\":true}"
 fi
+GENERATION_CONFIG="{\"temperature\":${DEFAULT_TEMPERATURE},\"top_p\":${DEFAULT_TOP_P},\"repetition_penalty\":${REPETITION_PENALTY}}"
 
 # OOM fallback: prove 500K first, then climb — export before running this script, e.g.
 #   MAX_MODEL_LEN=500000 MAX_NUM_SEQS=2 GPU_MEMORY_UTILIZATION=0.82 bash launch.sh
@@ -57,6 +61,7 @@ vllm serve "${MODEL_PATH}" \
   --tool-call-parser mimo \
   --reasoning-parser mimo \
   --default-chat-template-kwargs '{"enable_thinking":false}' \
+  --override-generation-config "${GENERATION_CONFIG}" \
   --speculative-config "${SPECULATIVE_CONFIG}" \
   ${EAGER_FLAG} \
   --host 0.0.0.0 \
@@ -69,5 +74,6 @@ vllm serve "${MODEL_PATH}" \
 # Smoke test (from any node):
 #   curl http://<head-ip>:8000/v1/chat/completions -H 'Content-Type: application/json' \
 #     -d '{"model":"MiMo-V2.5-NVFP4","messages":[{"role":"user","content":"Reply exactly: OK 1M MTP1"}],
-#          "max_tokens":16,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}'
+#          "max_tokens":16,"temperature":0,"repetition_penalty":1.08,
+#          "chat_template_kwargs":{"enable_thinking":false}}'
 #   Expect: "OK 1M MTP1"

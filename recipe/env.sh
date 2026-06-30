@@ -17,6 +17,16 @@ export ENABLE_MTP=1
 export MTP_SPEC_TOKENS=1                # MTP1 > MTP2 here (MTP2 halves KV pool, no speed gain)
 export ENFORCE_EAGER=1
 
+# --- stable default sampling for direct vLLM/OpenAI calls ---
+# MiMo's upstream local recipe recommends temperature=1.0/top_p=0.95, and vLLM
+# loads model generation_config.json by default. On the NVFP4 weights + NVFP4 KV
+# stack that can drift into Chinese or repetition loops on longer generations.
+# Hermes/OpenClaw should still send per-agent params, but this protects raw
+# /v1/chat/completions calls and clients that omit sampling settings.
+export DEFAULT_TEMPERATURE=0
+export DEFAULT_TOP_P=0.95
+export REPETITION_PENALTY=1.08
+
 # --- memory / Ray stability (CRITICAL for avoiding OOM at 1M) ---
 # Without these the 0.84 GMU + 1M pool is unforgiving and users hit OOM on load/profile.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # avoids fragmentation OOM
