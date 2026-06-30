@@ -851,10 +851,91 @@ new = '''    def _mimo_mtp1_greedy_fast_trace(
         greedy_spec_top_token_ids: torch.Tensor | None = None,
     ) -> SamplerOutput:
 '''
+old_existing_greedy_fast = '''    def _mimo_mtp1_greedy_fast_guard(
+        self,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> bool:
+        if os.environ.get("VLLM_MIMO_MTP1_GREEDY_FAST", "0") != "1":
+            return False
+        if spec_decode_metadata is None or self.num_spec_tokens != 1:
+            return False
+        if not hasattr(self.model, "get_top_tokens"):
+            return False
+        if any(num_draft != 1 for num_draft in spec_decode_metadata.num_draft_tokens):
+            return False
+        sampling_metadata = self.input_batch.sampling_metadata
+        logitsprocs = sampling_metadata.logitsprocs
+        has_logitsprocs = bool(logitsprocs.argmax_invariant) or bool(
+            logitsprocs.non_argmax_invariant
+        )
+        thinking_holder = sampling_metadata.thinking_budget_state_holder
+        has_thinking_budget = (
+            thinking_holder is not None
+            and thinking_holder.has_tracked_requests()
+        )
+        return (
+            sampling_metadata.all_greedy
+            and sampling_metadata.max_num_logprobs is None
+            and not sampling_metadata.logprob_token_ids
+            and sampling_metadata.no_penalties
+            and sampling_metadata.allowed_token_ids_mask is None
+            and not sampling_metadata.bad_words_token_ids
+            and not has_logitsprocs
+            and not self.num_prompt_logprobs
+            and not has_thinking_budget
+        )
+
+    def _sample_mimo_mtp1_greedy_fast(
+        self,
+        greedy_spec_top_token_ids: torch.Tensor,
+        spec_decode_metadata: SpecDecodeMetadata,
+    ) -> SamplerOutput:
+        target_token_ids = greedy_spec_top_token_ids.index_select(
+            0,
+            spec_decode_metadata.target_logits_indices.long(),
+        ).long()
+        bonus_token_ids = greedy_spec_top_token_ids.index_select(
+            0,
+            spec_decode_metadata.bonus_logits_indices.long(),
+        ).long()
+        draft_token_ids = spec_decode_metadata.draft_token_ids.long()
+        accepted = draft_token_ids.eq(target_token_ids)
+
+        output_token_ids = torch.full(
+            (len(spec_decode_metadata.num_draft_tokens), 2),
+            -1,
+            dtype=torch.int32,
+            device=draft_token_ids.device,
+        )
+        output_token_ids[:, 0] = torch.where(
+            accepted,
+            draft_token_ids,
+            target_token_ids,
+        ).to(torch.int32)
+        output_token_ids[:, 1] = torch.where(
+            accepted,
+            bonus_token_ids,
+            output_token_ids[:, 1].long(),
+        ).to(torch.int32)
+        return SamplerOutput(
+            sampled_token_ids=output_token_ids,
+            logprobs_tensors=None,
+        )
+
+    def _sample(
+        self,
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+        greedy_spec_top_token_ids: torch.Tensor | None = None,
+    ) -> SamplerOutput:
+'''
 if new not in text:
-    if old not in text:
+    if old in text:
+        text = text.replace(old, new, 1)
+    elif old_existing_greedy_fast in text:
+        text = text.replace(old_existing_greedy_fast, new, 1)
+    else:
         raise SystemExit('[fix-mimo-v2-vllm] ERROR: _sample anchor not found')
-    text = text.replace(old, new, 1)
 
 old = '''        self._maybe_observe_dspark_position0_quality(
             spec_decode_metadata,
