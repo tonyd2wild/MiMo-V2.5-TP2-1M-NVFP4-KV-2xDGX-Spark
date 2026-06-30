@@ -51,6 +51,9 @@ MTP_SPEC_TOKENS=1
 VLLM_MIMO_MTP1_GREEDY_FAST=1
 ```
 
+The checked-in `recipe/env.sh` defaults now match this C8 profile so a fresh
+deployment does not accidentally fall back to the older C4/4096/block32 shape.
+
 Boot log:
 
 ```text
@@ -122,6 +125,7 @@ Key flags (full env + launch in [`recipe/`](recipe/)):
 --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
 --override-generation-config '{"temperature":0,"top_p":0.95,"repetition_penalty":1.08}' \
 --load-format safetensors --enforce-eager \
+--generation-config vllm \
 --hf-overrides '{"architectures":["MiMoV2OmniForCausalLM"]}' \
 --tool-call-parser mimo --reasoning-parser mimo
 ```
@@ -142,12 +146,35 @@ parameters.
 The recipe therefore sets a conservative server-side default:
 
 ```bash
+--generation-config vllm
 --override-generation-config '{"temperature":0,"top_p":0.95,"repetition_penalty":1.08}'
 ```
 
 Hermes/OpenClaw should still set sampling per agent/request, but keeping this
-override in the vLLM launch protects direct `/v1/chat/completions` callers and
-avoids inheriting the model repo's high-temperature generation defaults.
+override in the vLLM launch protects direct `/v1/chat/completions` callers.
+`--generation-config vllm` prevents the server from inheriting model-card
+sampling defaults, while `--override-generation-config` sets the stable
+NVFP4-safe fallback for clients that omit sampling parameters.
+
+### DSpark lesson applied to MiMo
+
+DeepSeek V4 Flash DSpark and MiMo V2.5 do not share the same speculative
+decoder implementation. DeepSeek's `method:"dspark"` proposer is
+DeepSeek-specific; MiMo uses vLLM's `method:"mtp"` path plus the MiMo-specific
+MTP and DiffKV patches in this repo.
+
+So the practical transfer is not copying DeepSeek's DSpark proposer into MiMo.
+The transfer is:
+
+- deterministic server defaults before harness testing
+- explicit per-node `VLLM_HOST_IP` so Ray/vLLM never bind link-local or the
+  wrong node IP
+- direct endpoint validation before Hermes/OpenClaw
+- capture logs/metrics before changing agent configs
+- improve MiMo's MTP proposer/metadata/target-token path as the DSpark analogue
+
+Bluey/Reddie-specific bring-up notes are in
+[`BLUEY_REDDIE_DEPLOYMENT.md`](BLUEY_REDDIE_DEPLOYMENT.md).
 
 ## Reproduce from scratch (start here)
 
@@ -250,12 +277,23 @@ If that boots, text/image/audio is fine and it's specifically video profiling me
 2. `max_model_len=1000000`, `max_num_seqs=8`, `gpu-memory-utilization=0.84`.
 3. Confirm the startup log shows a `GPU KV cache size` ≥ 1,000,000 tokens (1M fits).
 4. Smoke (`"Reply exactly: OK"`) → then run the 69-eval.
+5. Before pointing agents at the endpoint, run:
+
+```bash
+MIMO_BASE_URL=http://<head-ip>:8000/v1 \
+CONCURRENCY=1,2,4,6,8 \
+python3 scripts/agent_sanity_bench.py
+```
+
+Every row should report `bad_outputs: 0`.
 
 ## Files
 
 ```
 .
 ├── README.md
+├── BLUEY_REDDIE_DEPLOYMENT.md
+├── scripts/agent_sanity_bench.py
 ├── recipe/{env.sh, launch.sh, run-head.sh, run-worker.sh}
 │   ├── run-container.sh                  # docker run the patched container — RUN ON BOTH NODES first
 │   ├── apply-mods.sh                     # docker-cp + run each mod into the container (both nodes)

@@ -19,7 +19,7 @@ set -euo pipefail
 : "${TENSOR_PARALLEL_SIZE:=2}"
 : "${PIPELINE_PARALLEL_SIZE:=1}"
 : "${USE_LOCAL_ARGMAX_REDUCTION:=0}"
-: "${BLOCK_SIZE:=32}"
+: "${BLOCK_SIZE:=64}"
 : "${VLLM_HOST_IP:=${HEAD_ROCE_IP:-}}"
 if [ -z "${VLLM_HOST_IP:-}" ]; then
   echo "ERROR: set VLLM_HOST_IP or HEAD_ROCE_IP to the head node RoCE/cluster IP" >&2
@@ -61,6 +61,7 @@ vllm serve "${MODEL_PATH}" \
   --tool-call-parser mimo \
   --reasoning-parser mimo \
   --default-chat-template-kwargs '{"enable_thinking":false}' \
+  --generation-config vllm \
   --override-generation-config "${GENERATION_CONFIG}" \
   --speculative-config "${SPECULATIVE_CONFIG}" \
   ${EAGER_FLAG} \

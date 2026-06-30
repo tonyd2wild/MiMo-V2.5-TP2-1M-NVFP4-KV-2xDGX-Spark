@@ -10,11 +10,13 @@
 # --- core serving shape ---
 export LOAD_FORMAT=safetensors          # NOT instanttensor (it wedges the MTP+NVFP4-KV 2nd load)
 export MAX_MODEL_LEN=1000000
-export MAX_NUM_BATCHED_TOKENS=4096
-export MAX_NUM_SEQS=4
+export MAX_NUM_BATCHED_TOKENS=2048
+export MAX_NUM_SEQS=8
+export BLOCK_SIZE=64
 export GPU_MEMORY_UTILIZATION=0.84      # 0.80 just-barely OOMs at 500K (caps ~474K)
 export ENABLE_MTP=1
 export MTP_SPEC_TOKENS=1                # MTP1 > MTP2 here (MTP2 halves KV pool, no speed gain)
+export VLLM_MIMO_MTP1_GREEDY_FAST=1     # Current best C8 speed profile.
 export ENFORCE_EAGER=1
 
 # --- stable default sampling for direct vLLM/OpenAI calls ---
@@ -33,6 +35,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # avoids fragmentation
 export RAY_memory_monitor_refresh_ms=0                    # stops Ray's 95% monitor false-killing TP0 post-warmup
 export VLLM_USE_RAY_V2_EXECUTOR_BACKEND=0
 export VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM=0
+export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
 # Cap the Ray plasma object store on EVERY node (see run-head.sh / run-worker.sh):
 #   ray start ... --object-store-memory=1073741824   # 1 GiB; uncapped Ray steals unified mem -> OOM
 
