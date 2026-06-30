@@ -60,6 +60,51 @@ extra split overhead appears to outweigh the benefit for observed MiMo C1 decode
 traffic. Future speed work should look beyond "enable BS128 full-attention WMMA"
 alone.
 
+### 2026-06-30 restored 65K no-loop baseline check
+
+After rolling back the live BS128 patch, Bluey/Reddie was restored to the stable
+65K/C8 profile:
+
+```bash
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+GPU_MEMORY_UTILIZATION=0.84
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+USE_LOCAL_ARGMAX_REDUCTION=0
+ENFORCE_EAGER=1
+BLOCK_SIZE=64
+```
+
+Runtime evidence:
+
+```text
+/v1/models: MiMo-V2.5-NVFP4, max_model_len=65536
+GPU KV cache size: 2,452,973 tokens
+Maximum concurrency for 65,536 tokens per request: 37.43x
+Smoke response: OK RESTORED BASELINE
+```
+
+Bounded direct endpoint checks, with no agent harness and no background loop:
+
+| concurrency | completion tokens | client aggregate tok/s | bad outputs |
+|---:|---:|---:|---:|
+| 1 | 256 | 23.13 | 0 |
+| 2 | 512 | 39.50 | 0 |
+
+Metrics after the check showed the endpoint idle:
+
+```text
+vllm:num_requests_running 0
+vllm:num_requests_waiting 0
+```
+
+Server-side generation windows during the same run still reached about
+28-34 tok/s, with MTP acceptance around 79-87% once warm. This confirms the
+endpoint is stable and clean, but the C1 decode ceiling remains the open speed
+problem.
+
 ### 2026-06-30 live recovery checkpoint
 
 After an attempted `MAX_MODEL_LEN=1000000`, `MAX_NUM_SEQS=1` C1-isolation
@@ -966,15 +1011,19 @@ or enable it until it compiles and compares in an isolated harness first.
 
 ## Next useful experiments
 
-1. Build an offline BS128 WMMA correctness/compile harness so the template can be
-   tested without taking the live endpoint down.
-2. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
-   large for this tuning pass.
-3. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
+1. Treat BS128 WMMA as an experimental harness only. The offline harness passed,
+   and a live authoritative patch activated cleanly, but C1 regressed to
+   21-25 tok/s. Do not enable it by default.
+2. Investigate the still-rejected sliding-window/sink attention path:
+   `q=(2,32,192)`, `kvh=4`, `bs=64`, `win=127`, `sinks=True`. This path remains
+   Triton-only and appears on every MiMo MTP1 request.
+3. Decide whether to implement MiMo `SupportsPP` plumbing, or retire PP as too
+   large for this tuning pass. PP=2/TP=1 currently fails before model load.
+4. Skip lower `VLLM_WMMA_NSPLIT` values unless a trace first proves the MTP path
    is using WMMA; 256 was already worse than the 512 default at 65K.
-4. If WMMA coverage stays mixed, the next real code path is a
-   MiMo-MTP-aware proposer wrapper or metadata-cache path inside vLLM's existing
-   `method:"mtp"` flow.
+5. If WMMA coverage stays mixed, the next real code path is a MiMo-MTP-aware
+   proposer wrapper or metadata-cache path inside vLLM's existing `method:"mtp"`
+   flow.
 
 Do not treat aggregate batching wins as single-stream speed wins. The target
 for this tuning track is C1 decode speed.
