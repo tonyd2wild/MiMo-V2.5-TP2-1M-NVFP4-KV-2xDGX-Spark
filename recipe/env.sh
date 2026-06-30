@@ -38,6 +38,9 @@ export VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM=0
 export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
 # Cap the Ray plasma object store on EVERY node (see run-head.sh / run-worker.sh):
 #   ray start ... --object-store-memory=1073741824   # 1 GiB; uncapped Ray steals unified mem -> OOM
+# Keep Ray session/spill state off nearly-full root filesystems. Ray refuses
+# object creation when its temp filesystem is over 95% full, even with many GB free.
+export RAY_TMPDIR="${RAY_TMPDIR:-/dev/shm/ray}"
 
 # --- NVFP4 weights + KV + WMMA decode ---
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1

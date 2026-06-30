@@ -20,7 +20,11 @@ set -euo pipefail
 : "${PIPELINE_PARALLEL_SIZE:=1}"
 : "${USE_LOCAL_ARGMAX_REDUCTION:=0}"
 : "${BLOCK_SIZE:=64}"
-: "${VLLM_HOST_IP:=${HEAD_ROCE_IP:-}}"
+if [ -n "${HEAD_ROCE_IP:-}" ]; then
+  VLLM_HOST_IP="${HEAD_ROCE_IP}"
+else
+  : "${VLLM_HOST_IP:=}"
+fi
 if [ -z "${VLLM_HOST_IP:-}" ]; then
   echo "ERROR: set VLLM_HOST_IP or HEAD_ROCE_IP to the head node RoCE/cluster IP" >&2
   exit 2

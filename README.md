@@ -61,6 +61,12 @@ GPU KV cache size: 2,171,757 tokens
 Maximum concurrency for 1,000,000 tokens per request: 2.17x
 ```
 
+Startup note: after the target weights and the fast MTP/drafter weight pass
+finish, vLLM may still sit without port 8000 open while it profiles, creates
+the KV cache, and warms the model. On the 65K smoke run below that phase took
+67.53s after the second load completed. Wait for `Application startup complete`
+before declaring the launch wedged.
+
 Static short-request concurrency:
 
 | concurrency | aggregate tok/s | aggregate-derived tok/s per stream | acceptance |
@@ -156,6 +162,41 @@ override in the vLLM launch protects direct `/v1/chat/completions` callers.
 sampling defaults, while `--override-generation-config` sets the stable
 NVFP4-safe fallback for clients that omit sampling parameters.
 
+### 65K direct-endpoint smoke checkpoint
+
+On Bluey/Reddie, a fresh 65K MTP1 launch with Ray temp pinned to `/dev/shm/ray`
+served cleanly through the raw OpenAI-compatible endpoint:
+
+```text
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+GPU_MEMORY_UTILIZATION=0.84
+MTP_SPEC_TOKENS=1
+```
+
+Boot evidence:
+
+```text
+Available KV cache memory: 8.96 GiB / 13.05 GiB
+Maximum concurrency for 65,536 tokens per request: 33.75x
+init engine (profile, create kv cache, warmup model) took 67.53 s
+Application startup complete.
+```
+
+Direct sanity/concurrency bench (`MAX_TOKENS=160`, deterministic sampling,
+checks for CJK drift/repetition/tool/XML leakage):
+
+| concurrency | success | aggregate tok/s | bad outputs |
+|---:|---:|---:|---:|
+| 1 | 1/1 | 21.55 | 0 |
+| 2 | 2/2 | 33.09 | 0 |
+| 4 | 4/4 | 52.06 | 0 |
+| 6 | 6/6 | 67.30 | 0 |
+
+This confirms the endpoint itself can generate cleanly under concurrency before
+Hermes/OpenClaw are pointed at it.
+
 ### DSpark lesson applied to MiMo
 
 DeepSeek V4 Flash DSpark and MiMo V2.5 do not share the same speculative
@@ -237,9 +278,10 @@ The 1M headline is real (live: `GPU KV cache size: 1,970,104 tokens`, `1.97x` co
 
 1. **Use the patched container/mod stack** (non-optional): `nvfp4-kv-diffkv`, `fix-mimo-v2-vllm`, `fix-modelopt-mixed-mxfp8`, `ray-keep-node-nccl-hca`, `fix-prometheus-instrumentator-router`, `drop-caches`. Stock vLLM will fail/OOM.
 2. **Cap the Ray plasma object store on EVERY node** — `--object-store-memory=1073741824`. Uncapped Ray reserves a huge store and steals unified memory → OOM on weight load/profile. Use the included [`recipe/run-head.sh`](recipe/run-head.sh) + [`recipe/run-worker.sh`](recipe/run-worker.sh).
-3. **Worker-first clean start:** stop old containers/Ray → start worker container → start head container → apply mods on both → `run-head.sh` (head Ray) → `run-worker.sh` (worker joins) → wait until `ray status` shows **2 GPUs** → `source env.sh && bash launch.sh`.
-4. **Set the memory env vars** (in `env.sh`): `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and `RAY_memory_monitor_refresh_ms=0` are the two that most prevent the OOM report.
-5. **No stale processes** — kill any leftover vLLM/Ray containers first; they hold unified memory.
+3. **Keep Ray temp off a nearly-full root disk** — `env.sh` defaults `RAY_TMPDIR=/dev/shm/ray`, and the Ray scripts create it. If Ray logs `is over 95% full`, fix this before debugging vLLM.
+4. **Worker-first clean start:** stop old containers/Ray → start worker container → start head container → apply mods on both → `run-head.sh` (head Ray) → `run-worker.sh` (worker joins) → wait until `ray status` shows **2 GPUs** → `source env.sh && bash launch.sh`.
+5. **Set the memory env vars** (in `env.sh`): `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and `RAY_memory_monitor_refresh_ms=0` are the two that most prevent the OOM report.
+6. **No stale processes** — kill any leftover vLLM/Ray containers first; they hold unified memory.
 
 **If 1M still OOMs — boot the 500K fallback first, then climb:**
 ```bash

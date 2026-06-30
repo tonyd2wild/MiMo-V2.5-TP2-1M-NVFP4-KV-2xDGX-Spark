@@ -11,6 +11,8 @@ fi
 
 # Pin the host IP so Ray/vLLM don't bind a link-local 169.254.x.x interface (a known OOM/crash cause).
 export VLLM_HOST_IP="${HEAD_ROCE_IP}"
+export RAY_TMPDIR="${RAY_TMPDIR:-/dev/shm/ray}"
+mkdir -p "${RAY_TMPDIR}"
 
 ray stop --force || true
 ray start \
