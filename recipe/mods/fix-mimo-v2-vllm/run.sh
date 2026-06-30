@@ -943,6 +943,17 @@ if new not in text:
         text = text.replace(old, new, 1)
     elif old_existing_greedy_fast in text:
         text = text.replace(old_existing_greedy_fast, new, 1)
+    elif '    def _mimo_mtp1_greedy_fast_trace(\n' in text:
+        start = text.index('    def _mimo_mtp1_greedy_fast_trace(\n')
+        sample_anchor = '''    def _sample(
+        self,
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+        greedy_spec_top_token_ids: torch.Tensor | None = None,
+    ) -> SamplerOutput:
+'''
+        end = text.index(sample_anchor, start) + len(sample_anchor)
+        text = text[:start] + new + text[end:]
     else:
         raise SystemExit('[fix-mimo-v2-vllm] ERROR: _sample anchor not found')
 
