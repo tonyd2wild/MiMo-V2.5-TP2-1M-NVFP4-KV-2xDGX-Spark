@@ -188,6 +188,26 @@ Server-side generation windows during the same run still reached about
 endpoint is stable and clean, but the C1 decode ceiling remains the open speed
 problem.
 
+### 2026-06-30 MTP1 greedy fast-path trace hook
+
+The MiMo vLLM patch now includes an optional trace for the MTP1 greedy target
+top-token fast path. It is disabled by default and does not change normal
+serving behavior.
+
+Enable it only for a short diagnostic relaunch:
+
+```bash
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+VLLM_MIMO_MTP1_GREEDY_FAST_TRACE=1
+VLLM_MIMO_MTP1_GREEDY_FAST_TRACE_PATH=/tmp/mimo_mtp1_greedy_fast_trace.log
+```
+
+The trace records capped `hit` / `miss` lines with the guard reason. This is the
+next proof point before more live speed tinkering: if normal C1 requests miss
+because of sampling metadata, penalties, logprobs, logits processors, or draft
+token count, the target-logits skip is not active even though the environment
+flag is set.
+
 ### 2026-06-30 live recovery checkpoint
 
 After an attempted `MAX_MODEL_LEN=1000000`, `MAX_NUM_SEQS=1` C1-isolation
