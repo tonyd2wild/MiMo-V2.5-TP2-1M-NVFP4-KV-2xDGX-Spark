@@ -165,7 +165,9 @@ NVFP4-safe fallback for clients that omit sampling parameters.
 ### 65K direct-endpoint smoke checkpoint
 
 On Bluey/Reddie, a fresh 65K MTP1 launch with Ray temp pinned to `/dev/shm/ray`
-served cleanly through the raw OpenAI-compatible endpoint:
+served cleanly through the raw OpenAI-compatible endpoint. This is also the
+current safe recovery profile after a later 1M/C1-isolation relaunch wedged
+during model load at checkpoint shard `18/37`:
 
 ```text
 MAX_MODEL_LEN=65536
@@ -178,24 +180,37 @@ MTP_SPEC_TOKENS=1
 Boot evidence:
 
 ```text
-Available KV cache memory: 8.96 GiB / 13.05 GiB
-Maximum concurrency for 65,536 tokens per request: 33.75x
-init engine (profile, create kv cache, warmup model) took 67.53 s
+/v1/models: MiMo-V2.5-NVFP4, max_model_len=65536
+GPU KV cache size: 2,416,341 tokens
+Maximum concurrency for 65,536 tokens per request: 36.87x
 Application startup complete.
+Smoke response: OK LIVE STILL STABLE
 ```
 
-Direct sanity/concurrency bench (`MAX_TOKENS=160`, deterministic sampling,
-checks for CJK drift/repetition/tool/XML leakage):
+Direct sanity/concurrency bench (`MAX_TOKENS=256`, deterministic sampling,
+checks for CJK drift/repetition/tool/XML leakage, 2026-06-30 live run):
 
 | concurrency | success | aggregate tok/s | bad outputs |
 |---:|---:|---:|---:|
-| 1 | 1/1 | 21.55 | 0 |
-| 2 | 2/2 | 33.09 | 0 |
-| 4 | 4/4 | 52.06 | 0 |
-| 6 | 6/6 | 67.30 | 0 |
+| 1 | 1/1 | 23.17 | 0 |
+| 2 | 2/2 | 36.52 | 0 |
+| 4 | 4/4 | 56.45 | 0 |
+| 6 | 6/6 | 70.95 | 0 |
 
 This confirms the endpoint itself can generate cleanly under concurrency before
 Hermes/OpenClaw are pointed at it.
+
+Current speed caveat: the stable 65K profile is clean, but C1 is still roughly
+27-29 tok/s, not the 60 tok/s target. Two verified blockers are:
+
+- `repetition_penalty=1.08` is a safe server fallback, but it makes requests
+  ineligible for the strict greedy MTP1 top-token fast path. Direct C1 A/B
+  showed `repetition_penalty=1.0` modestly faster than `1.08`, not a full fix.
+- The custom WMMA decode kernel is enabled and precompiled, but current MiMo
+  MTP1 decode calls are rejected by its production gate (`bs=128` full-attention
+  calls and sliding-window/sinks calls). See
+  [`benchmarks/speed-tuning-notes-20260629.md`](benchmarks/speed-tuning-notes-20260629.md)
+  before promoting the dormant BS128 WMMA experiment.
 
 ### DSpark lesson applied to MiMo
 
@@ -213,6 +228,12 @@ The transfer is:
 - direct endpoint validation before Hermes/OpenClaw
 - capture logs/metrics before changing agent configs
 - improve MiMo's MTP proposer/metadata/target-token path as the DSpark analogue
+
+Concrete DSpark-inspired next test for MiMo is a separate 200K/C16 lane
+(`MAX_MODEL_LEN=200000`, `MAX_NUM_SEQS=16`, larger batched-token budget) to
+compare against DeepSeek's high-concurrency shape. Do not confuse that with
+porting DeepSeek's `method:"dspark"` proposer directly; that code depends on
+DeepSeek-specific kernels/configuration.
 
 Bluey/Reddie-specific bring-up notes are in
 [`BLUEY_REDDIE_DEPLOYMENT.md`](BLUEY_REDDIE_DEPLOYMENT.md).

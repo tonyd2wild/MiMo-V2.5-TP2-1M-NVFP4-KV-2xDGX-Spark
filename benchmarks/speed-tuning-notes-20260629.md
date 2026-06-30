@@ -17,6 +17,97 @@ dead ends reproducible.
 
 ## Verified measurements
 
+### 2026-06-30 live recovery checkpoint
+
+After an attempted `MAX_MODEL_LEN=1000000`, `MAX_NUM_SEQS=1` C1-isolation
+relaunch wedged during model load at checkpoint shard `18/37`, Bluey/Reddie was
+restored to the stable 65K/C8 profile:
+
+```bash
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+GPU_MEMORY_UTILIZATION=0.84
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+VLLM_WMMA_DECODE=1
+```
+
+Live endpoint evidence:
+
+```text
+/v1/models: MiMo-V2.5-NVFP4, max_model_len=65536
+GPU KV cache size: 2,416,341 tokens
+Maximum concurrency for 65,536 tokens per request: 36.87x
+Smoke response: OK LIVE STILL STABLE
+```
+
+Single-stream 1024-token check:
+
+| source | tok/s | notes |
+|---|---:|---|
+| client wall-clock | 26.87 | `max_tokens=1024`, `ignore_eos=true` |
+| server log windows | 27.3-28.2 | acceptance ~0.69-0.74 |
+
+Static deterministic sanity sweep (`MAX_TOKENS=256`, direct OpenAI API, checks
+for CJK drift/repetition/tool/XML leakage):
+
+| concurrency | success | client aggregate tok/s | bad outputs | best server window |
+|---:|---:|---:|---:|---:|
+| 1 | 1/1 | 23.17 | 0 | 24.5 |
+| 2 | 2/2 | 36.52 | 0 | 34.8 |
+| 4 | 4/4 | 56.45 | 0 | 66.0 |
+| 6 | 6/6 | 70.95 | 0 | 85.3 |
+
+Conclusion: this profile is stable and clean, but it is not the 60 tok/s
+single-upstream target. It is a safe fallback while speed work continues.
+
+### Penalty vs greedy-fast eligibility
+
+The MiMo MTP1 greedy fast path is installed and workers inherit
+`VLLM_MIMO_MTP1_GREEDY_FAST=1`, but the guard requires
+`sampling_metadata.no_penalties`. Therefore `repetition_penalty=1.08` protects
+stability for clients that omit sampling settings, but likely disables the
+fastest greedy path for those requests.
+
+Direct C1 A/B on the live 65K profile (`max_tokens=512`, `temperature=0`,
+`top_p=1.0`, `ignore_eos=true`):
+
+| repetition penalty | client tok/s | quality check |
+|---:|---:|---|
+| 1.00 | 29.05 | no CJK, no repeated-char loop |
+| 1.08 | 25.74 | no CJK, no repeated-char loop |
+| 1.00 | 27.77 | no CJK, no repeated-char loop |
+
+Conclusion: disabling the penalty for controlled greedy requests gives a modest
+lift, but it is not enough to reach the target by itself. Keep the server-side
+`1.08` fallback for safety unless a harness sends explicit per-request
+`repetition_penalty=1.0` for trusted speed tests.
+
+### Live WMMA decode trace
+
+The active runtime has `VLLM_WMMA_DECODE=1` and both ranks precompile the custom
+WMMA decode kernel, but the observed MiMo decode shapes are not handled by the
+current production gate:
+
+```text
+/tmp/wmma_trace.log:
+KERNEL_ACTIVE: 0
+REJECT: 24
+
+REJECT=shape q=(4, 32, 192) kvh=2 hqk=192 hv=128 bs=128 ... mq=2 win=-1 sinks=False
+REJECT=shape q=(4, 32, 192) kvh=4 hqk=192 hv=128 bs=64  ... mq=2 win=127 sinks=True
+```
+
+The first shape is the full-attention path missing WMMA because
+`wmma_decode.py` only accepts block sizes `32` and `64`. The second is the
+sliding-window/sinks path, which is intentionally rejected by the feature gate.
+
+Conclusion: "WMMA enabled" does not currently mean "WMMA is accelerating the
+observed MiMo MTP1 decode calls." The closest MiMo-native speed lead remains
+the dormant BS128 WMMA experiment, but it must pass compare-mode correctness in
+an isolated harness before it is safe for serving.
+
 ### Eager baseline
 
 Long single-stream runs:
