@@ -776,9 +776,15 @@ new = '''    def _mimo_mtp1_greedy_fast_trace(
             return False
         sampling_metadata = self.input_batch.sampling_metadata
         logitsprocs = sampling_metadata.logitsprocs
-        has_logitsprocs = bool(logitsprocs.argmax_invariant) or bool(
-            logitsprocs.non_argmax_invariant
-        )
+        active_logitsprocs = list(logitsprocs.argmax_invariant)
+        for processor in logitsprocs.non_argmax_invariant:
+            if (
+                processor.__class__.__name__ == "MinTokensLogitsProcessor"
+                and not getattr(processor, "min_toks", {})
+            ):
+                continue
+            active_logitsprocs.append(processor)
+        has_logitsprocs = bool(active_logitsprocs)
         thinking_holder = sampling_metadata.thinking_budget_state_holder
         has_thinking_budget = (
             thinking_holder is not None
@@ -794,7 +800,10 @@ new = '''    def _mimo_mtp1_greedy_fast_trace(
                 sampling_metadata.allowed_token_ids_mask is None,
             ),
             ("no_bad_words", not sampling_metadata.bad_words_token_ids),
-            ("no_logits_processors", not has_logitsprocs),
+            (
+                "no_logits_processors",
+                not has_logitsprocs,
+            ),
             ("no_prompt_logprobs", not self.num_prompt_logprobs),
             ("no_thinking_budget", not has_thinking_budget),
         )

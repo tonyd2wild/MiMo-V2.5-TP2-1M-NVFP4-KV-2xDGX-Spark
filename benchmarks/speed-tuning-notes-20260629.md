@@ -208,6 +208,13 @@ because of sampling metadata, penalties, logprobs, logits processors, or draft
 token count, the target-logits skip is not active even though the environment
 flag is set.
 
+First live trace result: the stable anti-garble default
+`repetition_penalty=1.08` misses the fast path with `reason=no_penalties`.
+When repetition penalty is removed, vLLM's speculative decode path still
+installs `MinTokensLogitsProcessor`; the guard now allows that processor only
+when it is inactive (`min_toks` is empty). Active min-token masking still forces
+the normal logits path because it can change greedy argmax.
+
 ### 2026-06-30 live recovery checkpoint
 
 After an attempted `MAX_MODEL_LEN=1000000`, `MAX_NUM_SEQS=1` C1-isolation
