@@ -17,6 +17,49 @@ dead ends reproducible.
 
 ## Verified measurements
 
+### 2026-06-30 BS128 WMMA live experiment
+
+The dormant BS128 WMMA decode path was tested in two phases:
+
+- Isolated harness: passed against a PyTorch reference on Bluey with
+  `shape=[2,32,192]`, `block_size=128`, `seq_len=180`, `max_abs=0.015426`,
+  `mean_abs=0.001595`, `ok=True`.
+- Live serving patch: booted successfully on Bluey/Reddie, activated the custom
+  full-attention WMMA decode kernel, and produced clean deterministic output.
+
+Live activation evidence:
+
+```text
+KERNEL_ACTIVE total_q=2 kvh=2 NSPLIT=512
+```
+
+The remaining rejects were the sliding-window/sink path, which the WMMA gate
+still intentionally refuses:
+
+```text
+REJECT=shape q=(2, 32, 192) kvh=4 ... bs=64 ... win=127 sinks=True
+```
+
+However, C1 speed regressed instead of improving:
+
+| test | completion tokens | wall time | client tok/s | quality |
+|---|---:|---:|---:|---|
+| 1024-token request | 698 | 33.019s | 21.14 | clean, no CJK drift |
+| warmed 512-token request | 512 | 20.729s | 24.70 | clean, no CJK drift |
+
+The live runtime was rolled back to the original production
+`wmma_decode.py` hash on both nodes:
+
+```text
+eabd1fcaa585b5f051b7793acdb28d2e9acfe8f342668c57525b382e353f9cfd
+```
+
+Conclusion: BS128 WMMA is correct enough to keep as an experimental harness, but
+it is not the current speed fix. The active kernel used `NSPLIT=512`, and the
+extra split overhead appears to outweigh the benefit for observed MiMo C1 decode
+traffic. Future speed work should look beyond "enable BS128 full-attention WMMA"
+alone.
+
 ### 2026-06-30 live recovery checkpoint
 
 After an attempted `MAX_MODEL_LEN=1000000`, `MAX_NUM_SEQS=1` C1-isolation
