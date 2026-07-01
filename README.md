@@ -188,14 +188,14 @@ Smoke response: OK LIVE STILL STABLE
 ```
 
 Direct sanity/concurrency bench (`MAX_TOKENS=256`, deterministic sampling,
-checks for CJK drift/repetition/tool/XML leakage, 2026-06-30 live run):
+checks for CJK drift/repetition/tool/XML leakage, latest stable-lane refresh):
 
 | concurrency | success | aggregate tok/s | bad outputs |
 |---:|---:|---:|---:|
-| 1 | 1/1 | 23.17 | 0 |
-| 2 | 2/2 | 36.52 | 0 |
-| 4 | 4/4 | 56.45 | 0 |
-| 6 | 6/6 | 70.95 | 0 |
+| 1 | 1/1 | 23.05 | 0 |
+| 2 | 2/2 | 36.79 | 0 |
+| 4 | 4/4 | 53.41 | 0 |
+| 6 | 6/6 | 74.28 | 0 |
 
 This confirms the endpoint itself can generate cleanly under concurrency before
 Hermes/OpenClaw are pointed at it.

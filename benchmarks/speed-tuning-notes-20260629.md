@@ -1089,6 +1089,44 @@ The endpoint remained stable and clean, but this is not a C1 speed win. The
 current better recorded C1 checkpoint is still the block-size-64 / greedy-fast
 1M profile at about 31.87-31.89 tok/s.
 
+### 65K stable-lane refresh
+
+The restored 65K/C8 endpoint was checked again from the MacBook Pro with the
+direct OpenAI-compatible API and the checked-in `scripts/agent_sanity_bench.py`.
+Request defaults were the stable agent-facing lane:
+
+```bash
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=8
+MAX_NUM_BATCHED_TOKENS=2048
+MTP_SPEC_TOKENS=1
+VLLM_MIMO_MTP1_GREEDY_FAST=1
+temperature=0
+top_p=1.0
+repetition_penalty=1.08
+MAX_TOKENS=256
+```
+
+| concurrency | success | client aggregate tok/s | bad outputs |
+|---:|---:|---:|---:|
+| 1 | 1/1 | 23.05 | 0 |
+| 2 | 2/2 | 36.79 | 0 |
+| 4 | 4/4 | 53.41 | 0 |
+| 6 | 6/6 | 74.28 | 0 |
+
+Metrics after the run showed the endpoint idle and healthy:
+
+```text
+vllm:num_requests_running 0
+vllm:num_requests_waiting 0
+vllm:spec_decode_num_accepted_tokens_total 1814
+vllm:spec_decode_num_draft_tokens_total 2569
+```
+
+Read: the stable fallback lane is clean under concurrency, and MTP acceptance is
+healthy at about 70.6%. This is still an aggregate-throughput result, not a C1
+speed fix.
+
 ### BS128 WMMA full-attention investigation
 
 The WMMA trace explains one real missed speed path on the current MiMo export:
